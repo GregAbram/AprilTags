@@ -17,13 +17,21 @@ public readonly struct RoomOriginEstimate
     public readonly int SampleCount;
     public readonly Vector3 TagPositionCameraLocal;
 
-    public RoomOriginEstimate(int tagId, Vector3 position, Quaternion rotation, int sampleCount, Vector3 tagPositionCameraLocal)
+    // The tag's center as detected in this session's world space (averaged over
+    // the window) and as configured in room coordinates - the pair RoomFit uses.
+    public readonly Vector3 TagWorldPosition;
+    public readonly Vector3 TagRoomPosition;
+
+    public RoomOriginEstimate(int tagId, Vector3 position, Quaternion rotation, int sampleCount,
+        Vector3 tagPositionCameraLocal, Vector3 tagWorldPosition, Vector3 tagRoomPosition)
     {
         TagId = tagId;
         Position = position;
         Rotation = rotation;
         SampleCount = sampleCount;
         TagPositionCameraLocal = tagPositionCameraLocal;
+        TagWorldPosition = tagWorldPosition;
+        TagRoomPosition = tagRoomPosition;
     }
 
     // World position of a point given in room coordinates.
@@ -64,6 +72,7 @@ public class AprilTagRoomLocalizer : MonoBehaviour
     private Vector3 forwardSum;
     private Vector2 pixelCenterSum;
     private Vector3 cameraLocalPositionSum;
+    private Vector3 tagWorldPositionSum;
     private int sampleCount;
 
     private Detector detector;
@@ -337,6 +346,7 @@ public class AprilTagRoomLocalizer : MonoBehaviour
                 forwardSum = Vector3.zero;
                 pixelCenterSum = Vector2.zero;
                 cameraLocalPositionSum = Vector3.zero;
+                tagWorldPositionSum = Vector3.zero;
                 sampleCount = 0;
             }
 
@@ -344,6 +354,7 @@ public class AprilTagRoomLocalizer : MonoBehaviour
             forwardSum += sampleRoomOriginRotation * Vector3.forward;
             pixelCenterSum += new Vector2((float)det.Center.x, (float)det.Center.y);
             cameraLocalPositionSum += tagPositionCameraLocal;
+            tagWorldPositionSum += sessionTagPosition;
             sampleCount++;
             lastSampleTime = Time.time;
 
@@ -357,7 +368,9 @@ public class AprilTagRoomLocalizer : MonoBehaviour
                 positionSum / sampleCount,
                 Quaternion.LookRotation(forwardSum.normalized, Vector3.up),
                 sampleCount,
-                cameraLocalPositionSum / sampleCount);
+                cameraLocalPositionSum / sampleCount,
+                tagWorldPositionSum / sampleCount,
+                knownRoomPose.position);
             var avgPixelCenter = pixelCenterSum / sampleCount;
 
             armed = false;
