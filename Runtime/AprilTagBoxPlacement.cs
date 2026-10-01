@@ -1,12 +1,10 @@
-using System.Collections.Generic;
-using System.IO;
-using AprilTag.Interop;
 using Meta.XR;
-using Unity.Mathematics;
 using UnityEngine;
-using UnityEngine.Networking;
-using UnityEngine.Rendering;
 
+// Places one box at a fixed room-frame pose using the first tag that locks after
+// startup. Detection lives in AprilTagRoomLocalizer: an existing one on this
+// GameObject is used as-is, otherwise one is added and configured from the
+// fields below (kept so scenes made before the split keep working).
 public class AprilTagBoxPlacement : MonoBehaviour
 {
     [SerializeField] private PassthroughCameraAccess cameraAccess;
@@ -20,325 +18,38 @@ public class AprilTagBoxPlacement : MonoBehaviour
     [SerializeField] private float maxSampleGapSeconds = 0.25f;
     [SerializeField] private float maxOffAxisAngleDegrees = 20f;
 
-    private float startTime;
-    private bool acquiring;
-    private int acquiringTagId;
-    private float lastSampleTime;
-    private Vector3 pendingCameraPosition;
-    private Quaternion pendingCameraRotation;
-    private float firstSampleTime;
-    private Vector3 positionSum;
-    private Vector3 forwardSum;
-    private Vector2 pixelCenterSum;
-    private Vector3 cameraLocalPositionSum;
-    private int sampleCount;
+    private AprilTagRoomLocalizer localizer;
 
-    private Detector detector;
-    private Family family;
-    private ImageU8 image;
-    private Color32[] pixelBuffer;
-    private bool readbackInFlight;
-    private bool locked;
-    private float principalPointCx;
-    private float principalPointCy;
-    private float focalLengthFx;
-    private float focalLengthFy;
-    private readonly Dictionary<int, (Vector3 position, Quaternion rotation, float sizeMeters)> tagRegistry = new();
-
-    private System.Collections.IEnumerator Start()
+    private void Awake()
     {
-        startTime = Time.time;
-
-        yield return LoadRoomConfig();
-
-        while (!cameraAccess.IsPlaying)
+        localizer = GetComponent<AprilTagRoomLocalizer>();
+        if (localizer == null)
         {
-            yield return null;
+            localizer = gameObject.AddComponent<AprilTagRoomLocalizer>();
+            localizer.Configure(cameraAccess, quadDecimate, configFileName,
+                trackingSettleDelaySeconds, acquisitionWindowSeconds, maxSampleGapSeconds, maxOffAxisAngleDegrees);
         }
 
-        Texture tex;
-        while ((tex = cameraAccess.GetTexture()) == null)
-        {
-            yield return null;
-        }
-
-        // Tracking (visual+IMU fusion) may not be fully settled immediately after
-        // the session starts; a pose queried too early can differ measurably from
-        // one queried a moment later even with no physical movement. Wait before
-        // allowing a lock so early, less-settled poses aren't used.
-        yield return new WaitForSeconds(trackingSettleDelaySeconds);
-
-        var width = tex.width;
-        var height = tex.height;
-        pixelBuffer = new Color32[width * height];
-
-        detector = Detector.Create();
-        detector.QuadDecimate = quadDecimate;
-        family = Family.CreateTagStandard41h12();
-        detector.AddFamily(family);
-        image = ImageU8.Create(width, height);
-
-        // Map sensor intrinsics onto the delivered texture (crop + uniform scale,
-        // see TextureIntrinsics). An earlier empirical focal scale factor (0.5543)
-        // made centered depth measurements match, but ground-truth testing at a
-        // known off-axis angle showed it produces a large lateral/angular error -
-        // the remaining depth error was tag size, not focal length (see
-        // sizeMeters in room_config.json).
-        var textureIntrinsics = TextureIntrinsics.ForTexture(cameraAccess.Intrinsics, width, height);
-        focalLengthFx = textureIntrinsics.Fx;
-        focalLengthFy = textureIntrinsics.Fy;
-        principalPointCx = textureIntrinsics.Cx;
-        principalPointCy = textureIntrinsics.Cy;
-
-        Debug.Log($"[AprilTagBoxPlacement] Texture {width}x{height}, sensor {cameraAccess.Intrinsics.SensorResolution}; texture intrinsics {textureIntrinsics}");
+        localizer.EstimateAcquired += OnEstimateAcquired;
+        localizer.BeginAcquisition();
     }
 
-    private System.Collections.IEnumerator LoadRoomConfig()
+    private void OnEstimateAcquired(RoomOriginEstimate estimate)
     {
-        var overridePath = Path.Combine(Application.persistentDataPath, configFileName);
-        string json = null;
+        localizer.EstimateAcquired -= OnEstimateAcquired;
 
-        if (File.Exists(overridePath))
-        {
-            json = File.ReadAllText(overridePath);
-        }
-        else
-        {
-            var streamingPath = Path.Combine(Application.streamingAssetsPath, configFileName);
-            using var request = UnityWebRequest.Get(streamingPath);
-            yield return request.SendWebRequest();
-            if (request.result == UnityWebRequest.Result.Success)
-            {
-                json = request.downloadHandler.text;
-            }
-            else
-            {
-                Debug.LogError($"[AprilTagBoxPlacement] Failed to load room config from {streamingPath}: {request.error}");
-            }
-        }
+        var boxWorldPosition = estimate.RoomToWorld(boxRoomPosition);
+        var boxWorldRotation = estimate.Rotation * Quaternion.Euler(0, boxRoomYawDegrees, 0);
+        boxTransform.SetPositionAndRotation(boxWorldPosition, boxWorldRotation);
 
-        if (string.IsNullOrEmpty(json))
-        {
-            yield break;
-        }
-
-        // Without this, a malformed config (e.g. a leading zero like "00", which
-        // isn't valid JSON) throws inside the coroutine and silently kills Start(),
-        // leaving the box at the session origin with no other sign of what failed.
-        RoomConfig config;
-        try
-        {
-            config = JsonUtility.FromJson<RoomConfig>(json);
-        }
-        catch (System.ArgumentException e)
-        {
-            Debug.LogError($"[AprilTagBoxPlacement] Room config '{configFileName}' is not valid JSON - no tags will be recognized: {e.Message}");
-            yield break;
-        }
-
-        if (config?.tags == null || config.tags.Length == 0)
-        {
-            Debug.LogError($"[AprilTagBoxPlacement] Room config '{configFileName}' lists no tags - nothing can be recognized");
-            yield break;
-        }
-
-        tagRegistry.Clear();
-        foreach (var tag in config.tags)
-        {
-            var position = new Vector3(tag.x, tag.y, tag.z);
-            var rotation = Quaternion.Euler(0, tag.yawDegrees, 0);
-            tagRegistry[tag.id] = (position, rotation, tag.sizeMeters);
-        }
-
-        Debug.Log($"[AprilTagBoxPlacement] Loaded room config: {tagRegistry.Count} known tag(s)");
-    }
-
-    private void Update()
-    {
-        if (detector == null || readbackInFlight || locked)
-        {
-            return;
-        }
-
-        var tex = cameraAccess.GetTexture();
-        if (tex == null)
-        {
-            return;
-        }
-
-        // Capture the camera pose now, alongside the texture - not later when the
-        // async readback completes, since that's 1+ frames later and would be
-        // mismatched with this image if the head is moving.
-        var cameraPoseNow = cameraAccess.GetCameraPose();
-        pendingCameraPosition = cameraPoseNow.position;
-        pendingCameraRotation = cameraPoseNow.rotation;
-
-        readbackInFlight = true;
-        AsyncGPUReadback.Request(tex, 0, TextureFormat.RGBA32, OnReadbackComplete);
-    }
-
-    private void OnReadbackComplete(AsyncGPUReadbackRequest request)
-    {
-        readbackInFlight = false;
-
-        if (locked || request.hasError)
-        {
-            return;
-        }
-
-        var data = request.GetData<Color32>();
-        data.CopyTo(pixelBuffer);
-
-        ConvertToImageU8(pixelBuffer, image);
-
-        using var detections = detector.Detect(image);
-        for (var i = 0; i < detections.Length; i++)
-        {
-            ref var det = ref detections[i];
-            if (!tagRegistry.TryGetValue(det.ID, out var knownRoomPose))
-            {
-                continue;
-            }
-
-            // A window only averages samples of the tag that started it, so a
-            // second tag in view can't blend its own systematic error in.
-            if (acquiring && det.ID != acquiringTagId && Time.time - lastSampleTime <= maxSampleGapSeconds)
-            {
-                continue;
-            }
-
-            // Only trust detections within the angular range we've actually
-            // validated with ground-truth testing - accuracy degrades at steeper
-            // off-axis angles. Users should look directly at the tag to acquire.
-            var pixelOffsetX = (float)det.Center.x - principalPointCx;
-            var pixelOffsetY = (float)det.Center.y - principalPointCy;
-            var angleXDegrees = Mathf.Atan2(pixelOffsetX, focalLengthFx) * Mathf.Rad2Deg;
-            var angleYDegrees = Mathf.Atan2(pixelOffsetY, focalLengthFy) * Mathf.Rad2Deg;
-            if (Mathf.Abs(angleXDegrees) > maxOffAxisAngleDegrees || Mathf.Abs(angleYDegrees) > maxOffAxisAngleDegrees)
-            {
-                continue;
-            }
-
-            var info = new DetectionInfo(
-                ref det, knownRoomPose.sizeMeters,
-                focalLengthFx, focalLengthFy,
-                principalPointCx, principalPointCy);
-
-            using var pose = new AprilTag.Interop.Pose(ref info);
-
-            // Same CV-to-Unity axis conversion as the package's own PoseEstimationJob,
-            // validated correct earlier via controlled physical rotation tests.
-            var rawPos = math.float3((float)pose.t.e0, (float)pose.t.e1, (float)pose.t.e2);
-            var tagPosition = rawPos * math.float3(1, -1, 1);
-
-            var rawRot = math.float3x3(
-                (float)pose.R.e00, (float)pose.R.e01, (float)pose.R.e02,
-                (float)pose.R.e10, (float)pose.R.e11, (float)pose.R.e12,
-                (float)pose.R.e20, (float)pose.R.e21, (float)pose.R.e22);
-            var rawQuat = math.quaternion(rawRot);
-            var flippedQuat = rawQuat.value * math.float4(-1, 1, -1, 1);
-
-            var tagPositionCameraLocal = new Vector3(tagPosition.x, tagPosition.y, tagPosition.z);
-            var tagRotationCameraLocal = new Quaternion(flippedQuat.x, flippedQuat.y, flippedQuat.z, flippedQuat.w);
-
-            var sessionTagPosition = pendingCameraPosition + pendingCameraRotation * tagPositionCameraLocal;
-            var sessionTagRotation = pendingCameraRotation * tagRotationCameraLocal;
-
-            // Solve for the room origin's pose in this session's world space, given
-            // this tag's known fixed pose in room coordinates and its just-detected
-            // pose in this session: sessionTagPose = roomOriginPose * knownRoomPose.
-            // Both the room frame and the headset's tracking frame share the same
-            // true "up" (gravity), so the room origin's rotation relative to this
-            // session should be yaw-only - any pitch/roll here is just noise from
-            // the angle the tag happened to be viewed at, and must be discarded
-            // rather than baked into the box placement.
-            var rawRelativeRotation = sessionTagRotation * Quaternion.Inverse(knownRoomPose.rotation);
-            var flatForward = Vector3.ProjectOnPlane(rawRelativeRotation * Vector3.forward, Vector3.up);
-            var sampleRoomOriginRotation = Quaternion.LookRotation(flatForward, Vector3.up);
-            var sampleRoomOriginPosition = sessionTagPosition - sampleRoomOriginRotation * knownRoomPose.position;
-
-            // Accumulate samples over a short window rather than trusting the very
-            // first detection - smooths out both single-frame noise and any
-            // transient tracking disturbance from recent head movement. The window
-            // must be a continuous run of sightings: if the tag drops out for longer
-            // than maxSampleGapSeconds, start over rather than averaging a sample
-            // from long ago with one from now.
-            if (acquiring && Time.time - lastSampleTime > maxSampleGapSeconds)
-            {
-                Debug.Log($"[AprilTagBoxPlacement] Lost tag {acquiringTagId} for {Time.time - lastSampleTime:F2}s after {sampleCount} sample(s); restarting acquisition");
-                acquiring = false;
-            }
-
-            if (!acquiring)
-            {
-                acquiring = true;
-                acquiringTagId = det.ID;
-                firstSampleTime = Time.time;
-                positionSum = Vector3.zero;
-                forwardSum = Vector3.zero;
-                pixelCenterSum = Vector2.zero;
-                cameraLocalPositionSum = Vector3.zero;
-                sampleCount = 0;
-            }
-
-            positionSum += sampleRoomOriginPosition;
-            forwardSum += sampleRoomOriginRotation * Vector3.forward;
-            pixelCenterSum += new Vector2((float)det.Center.x, (float)det.Center.y);
-            cameraLocalPositionSum += tagPositionCameraLocal;
-            sampleCount++;
-            lastSampleTime = Time.time;
-
-            if (Time.time - firstSampleTime < acquisitionWindowSeconds)
-            {
-                break;
-            }
-
-            var roomOriginPosition = positionSum / sampleCount;
-            var roomOriginRotation = Quaternion.LookRotation(forwardSum.normalized, Vector3.up);
-            var avgPixelCenter = pixelCenterSum / sampleCount;
-            var avgCameraLocalPosition = cameraLocalPositionSum / sampleCount;
-
-            var boxWorldPosition = roomOriginPosition + roomOriginRotation * boxRoomPosition;
-            var boxWorldRotation = roomOriginRotation * Quaternion.Euler(0, boxRoomYawDegrees, 0);
-
-            boxTransform.SetPositionAndRotation(boxWorldPosition, boxWorldRotation);
-            locked = true;
-
-            Debug.Log($"[AprilTagBoxPlacement] Locked using tag {det.ID} at {Time.time - startTime:F1}s since Start(), averaged {sampleCount} samples over {Time.time - firstSampleTime:F1}s; avg tag pixel center=({avgPixelCenter.x:F1},{avgPixelCenter.y:F1}) principalPoint=({principalPointCx:F1},{principalPointCy:F1}); avg tagPositionCameraLocal={avgCameraLocalPosition}; room origin at world pos={roomOriginPosition} rot={roomOriginRotation.eulerAngles}");
-            Debug.Log($"[AprilTagBoxPlacement] Box placed at world pos={boxWorldPosition} rot={boxWorldRotation.eulerAngles}");
-            break;
-        }
-    }
-
-    private static void ConvertToImageU8(Color32[] src, ImageU8 image)
-    {
-        var width = image.Width;
-        var height = image.Height;
-        var stride = image.Stride;
-        var dst = image.Buffer;
-
-        var offsSrc = 0;
-        var offsDst = stride * (height - 1);
-
-        for (var y = 0; y < height; y++)
-        {
-            for (var x = 0; x < width; x++)
-            {
-                dst[offsDst + x] = src[offsSrc + x].g;
-            }
-            offsSrc += width;
-            offsDst -= stride;
-        }
+        Debug.Log($"[AprilTagBoxPlacement] Box placed at world pos={boxWorldPosition} rot={boxWorldRotation.eulerAngles}");
     }
 
     private void OnDestroy()
     {
-        image?.Dispose();
-        if (detector != null && family != null)
+        if (localizer != null)
         {
-            detector.RemoveFamily(family);
+            localizer.EstimateAcquired -= OnEstimateAcquired;
         }
-        family?.Dispose();
-        detector?.Dispose();
     }
 }

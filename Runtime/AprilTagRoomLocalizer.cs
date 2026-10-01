@@ -1,0 +1,402 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using AprilTag.Interop;
+using Meta.XR;
+using Unity.Mathematics;
+using UnityEngine;
+using UnityEngine.Networking;
+using UnityEngine.Rendering;
+
+// The room origin's pose in this session's world space, as solved from one tag.
+public readonly struct RoomOriginEstimate
+{
+    public readonly int TagId;
+    public readonly Vector3 Position;
+    public readonly Quaternion Rotation;
+    public readonly int SampleCount;
+    public readonly Vector3 TagPositionCameraLocal;
+
+    public RoomOriginEstimate(int tagId, Vector3 position, Quaternion rotation, int sampleCount, Vector3 tagPositionCameraLocal)
+    {
+        TagId = tagId;
+        Position = position;
+        Rotation = rotation;
+        SampleCount = sampleCount;
+        TagPositionCameraLocal = tagPositionCameraLocal;
+    }
+
+    // World position of a point given in room coordinates.
+    public Vector3 RoomToWorld(Vector3 roomPosition) => Position + Rotation * roomPosition;
+}
+
+// Detects the tags listed in the room config and solves for the room origin's
+// pose in this session. Each BeginAcquisition() produces one estimate - from
+// whichever known tag first stays in view for a full acquisition window - and
+// raises EstimateAcquired; detection is idle between acquisitions.
+public class AprilTagRoomLocalizer : MonoBehaviour
+{
+    [SerializeField] private PassthroughCameraAccess cameraAccess;
+    [SerializeField] private int quadDecimate = 2;
+    [SerializeField] private string configFileName = "room_config.json";
+    [SerializeField] private float trackingSettleDelaySeconds = 2f;
+    [SerializeField] private float acquisitionWindowSeconds = 1f;
+    [SerializeField] private float maxSampleGapSeconds = 0.25f;
+    [SerializeField] private float maxOffAxisAngleDegrees = 20f;
+
+    public event Action<RoomOriginEstimate> EstimateAcquired;
+
+    // True from BeginAcquisition() until an estimate is raised or cancelled,
+    // including while still starting up (config load, camera, settle delay).
+    public bool IsAcquiring => armed;
+    public bool IsReady => detector != null;
+    public IReadOnlyCollection<int> KnownTagIds => tagRegistry.Keys;
+
+    private bool armed;
+    private float armedTime;
+    private bool acquiring;
+    private int acquiringTagId;
+    private float lastSampleTime;
+    private Vector3 pendingCameraPosition;
+    private Quaternion pendingCameraRotation;
+    private float firstSampleTime;
+    private Vector3 positionSum;
+    private Vector3 forwardSum;
+    private Vector2 pixelCenterSum;
+    private Vector3 cameraLocalPositionSum;
+    private int sampleCount;
+
+    private Detector detector;
+    private Family family;
+    private ImageU8 image;
+    private Color32[] pixelBuffer;
+    private bool readbackInFlight;
+    private float principalPointCx;
+    private float principalPointCy;
+    private float focalLengthFx;
+    private float focalLengthFy;
+    private readonly Dictionary<int, (Vector3 position, Quaternion rotation, float sizeMeters)> tagRegistry = new();
+
+    // For components that add the localizer at runtime; call before its Start().
+    public void Configure(PassthroughCameraAccess camera, int decimate, string configFile,
+        float settleDelaySeconds, float windowSeconds, float sampleGapSeconds, float offAxisAngleDegrees)
+    {
+        cameraAccess = camera;
+        quadDecimate = decimate;
+        configFileName = configFile;
+        trackingSettleDelaySeconds = settleDelaySeconds;
+        acquisitionWindowSeconds = windowSeconds;
+        maxSampleGapSeconds = sampleGapSeconds;
+        maxOffAxisAngleDegrees = offAxisAngleDegrees;
+    }
+
+    // Starts (or restarts) looking for a tag. Safe to call before the localizer
+    // is ready; acquisition begins as soon as it is.
+    public void BeginAcquisition()
+    {
+        armed = true;
+        armedTime = Time.time;
+        acquiring = false;
+    }
+
+    public void CancelAcquisition()
+    {
+        armed = false;
+        acquiring = false;
+    }
+
+    private System.Collections.IEnumerator Start()
+    {
+        yield return LoadRoomConfig();
+
+        while (!cameraAccess.IsPlaying)
+        {
+            yield return null;
+        }
+
+        Texture tex;
+        while ((tex = cameraAccess.GetTexture()) == null)
+        {
+            yield return null;
+        }
+
+        // Tracking (visual+IMU fusion) may not be fully settled immediately after
+        // the session starts; a pose queried too early can differ measurably from
+        // one queried a moment later even with no physical movement. Wait before
+        // allowing a lock so early, less-settled poses aren't used.
+        yield return new WaitForSeconds(trackingSettleDelaySeconds);
+
+        var width = tex.width;
+        var height = tex.height;
+        pixelBuffer = new Color32[width * height];
+
+        detector = Detector.Create();
+        detector.QuadDecimate = quadDecimate;
+        family = Family.CreateTagStandard41h12();
+        detector.AddFamily(family);
+        image = ImageU8.Create(width, height);
+
+        // Map sensor intrinsics onto the delivered texture (crop + uniform scale,
+        // see TextureIntrinsics). An earlier empirical focal scale factor (0.5543)
+        // made centered depth measurements match, but ground-truth testing at a
+        // known off-axis angle showed it produces a large lateral/angular error -
+        // the remaining depth error was tag size, not focal length (see
+        // sizeMeters in room_config.json).
+        var textureIntrinsics = TextureIntrinsics.ForTexture(cameraAccess.Intrinsics, width, height);
+        focalLengthFx = textureIntrinsics.Fx;
+        focalLengthFy = textureIntrinsics.Fy;
+        principalPointCx = textureIntrinsics.Cx;
+        principalPointCy = textureIntrinsics.Cy;
+
+        Debug.Log($"[AprilTagRoomLocalizer] Texture {width}x{height}, sensor {cameraAccess.Intrinsics.SensorResolution}; texture intrinsics {textureIntrinsics}");
+    }
+
+    private System.Collections.IEnumerator LoadRoomConfig()
+    {
+        var overridePath = Path.Combine(Application.persistentDataPath, configFileName);
+        string json = null;
+
+        if (File.Exists(overridePath))
+        {
+            json = File.ReadAllText(overridePath);
+        }
+        else
+        {
+            var streamingPath = Path.Combine(Application.streamingAssetsPath, configFileName);
+            using var request = UnityWebRequest.Get(streamingPath);
+            yield return request.SendWebRequest();
+            if (request.result == UnityWebRequest.Result.Success)
+            {
+                json = request.downloadHandler.text;
+            }
+            else
+            {
+                Debug.LogError($"[AprilTagRoomLocalizer] Failed to load room config from {streamingPath}: {request.error}");
+            }
+        }
+
+        if (string.IsNullOrEmpty(json))
+        {
+            yield break;
+        }
+
+        // Without this, a malformed config (e.g. a leading zero like "00", which
+        // isn't valid JSON) throws inside the coroutine and silently kills Start(),
+        // leaving nothing placed and no other sign of what failed.
+        RoomConfig config;
+        try
+        {
+            config = JsonUtility.FromJson<RoomConfig>(json);
+        }
+        catch (ArgumentException e)
+        {
+            Debug.LogError($"[AprilTagRoomLocalizer] Room config '{configFileName}' is not valid JSON - no tags will be recognized: {e.Message}");
+            yield break;
+        }
+
+        if (config?.tags == null || config.tags.Length == 0)
+        {
+            Debug.LogError($"[AprilTagRoomLocalizer] Room config '{configFileName}' lists no tags - nothing can be recognized");
+            yield break;
+        }
+
+        tagRegistry.Clear();
+        foreach (var tag in config.tags)
+        {
+            var position = new Vector3(tag.x, tag.y, tag.z);
+            var rotation = Quaternion.Euler(0, tag.yawDegrees, 0);
+            tagRegistry[tag.id] = (position, rotation, tag.sizeMeters);
+        }
+
+        Debug.Log($"[AprilTagRoomLocalizer] Loaded room config: {tagRegistry.Count} known tag(s) from {(File.Exists(overridePath) ? overridePath : "StreamingAssets")}");
+    }
+
+    private void Update()
+    {
+        if (detector == null || readbackInFlight || !armed)
+        {
+            return;
+        }
+
+        var tex = cameraAccess.GetTexture();
+        if (tex == null)
+        {
+            return;
+        }
+
+        // Capture the camera pose now, alongside the texture - not later when the
+        // async readback completes, since that's 1+ frames later and would be
+        // mismatched with this image if the head is moving.
+        var cameraPoseNow = cameraAccess.GetCameraPose();
+        pendingCameraPosition = cameraPoseNow.position;
+        pendingCameraRotation = cameraPoseNow.rotation;
+
+        readbackInFlight = true;
+        AsyncGPUReadback.Request(tex, 0, TextureFormat.RGBA32, OnReadbackComplete);
+    }
+
+    private void OnReadbackComplete(AsyncGPUReadbackRequest request)
+    {
+        readbackInFlight = false;
+
+        if (!armed || request.hasError || detector == null)
+        {
+            return;
+        }
+
+        var data = request.GetData<Color32>();
+        data.CopyTo(pixelBuffer);
+
+        ConvertToImageU8(pixelBuffer, image);
+
+        using var detections = detector.Detect(image);
+        for (var i = 0; i < detections.Length; i++)
+        {
+            ref var det = ref detections[i];
+            if (!tagRegistry.TryGetValue(det.ID, out var knownRoomPose))
+            {
+                continue;
+            }
+
+            // A window only averages samples of the tag that started it, so a
+            // second tag in view can't blend its own systematic error in.
+            if (acquiring && det.ID != acquiringTagId && Time.time - lastSampleTime <= maxSampleGapSeconds)
+            {
+                continue;
+            }
+
+            // Only trust detections within the angular range we've actually
+            // validated with ground-truth testing - accuracy degrades at steeper
+            // off-axis angles. Users should look directly at the tag to acquire.
+            var pixelOffsetX = (float)det.Center.x - principalPointCx;
+            var pixelOffsetY = (float)det.Center.y - principalPointCy;
+            var angleXDegrees = Mathf.Atan2(pixelOffsetX, focalLengthFx) * Mathf.Rad2Deg;
+            var angleYDegrees = Mathf.Atan2(pixelOffsetY, focalLengthFy) * Mathf.Rad2Deg;
+            if (Mathf.Abs(angleXDegrees) > maxOffAxisAngleDegrees || Mathf.Abs(angleYDegrees) > maxOffAxisAngleDegrees)
+            {
+                continue;
+            }
+
+            var info = new DetectionInfo(
+                ref det, knownRoomPose.sizeMeters,
+                focalLengthFx, focalLengthFy,
+                principalPointCx, principalPointCy);
+
+            using var pose = new AprilTag.Interop.Pose(ref info);
+
+            // Same CV-to-Unity axis conversion as the package's own PoseEstimationJob,
+            // validated correct earlier via controlled physical rotation tests.
+            var rawPos = math.float3((float)pose.t.e0, (float)pose.t.e1, (float)pose.t.e2);
+            var tagPosition = rawPos * math.float3(1, -1, 1);
+
+            var rawRot = math.float3x3(
+                (float)pose.R.e00, (float)pose.R.e01, (float)pose.R.e02,
+                (float)pose.R.e10, (float)pose.R.e11, (float)pose.R.e12,
+                (float)pose.R.e20, (float)pose.R.e21, (float)pose.R.e22);
+            var rawQuat = math.quaternion(rawRot);
+            var flippedQuat = rawQuat.value * math.float4(-1, 1, -1, 1);
+
+            var tagPositionCameraLocal = new Vector3(tagPosition.x, tagPosition.y, tagPosition.z);
+            var tagRotationCameraLocal = new Quaternion(flippedQuat.x, flippedQuat.y, flippedQuat.z, flippedQuat.w);
+
+            var sessionTagPosition = pendingCameraPosition + pendingCameraRotation * tagPositionCameraLocal;
+            var sessionTagRotation = pendingCameraRotation * tagRotationCameraLocal;
+
+            // Solve for the room origin's pose in this session's world space, given
+            // this tag's known fixed pose in room coordinates and its just-detected
+            // pose in this session: sessionTagPose = roomOriginPose * knownRoomPose.
+            // Both the room frame and the headset's tracking frame share the same
+            // true "up" (gravity), so the room origin's rotation relative to this
+            // session should be yaw-only - any pitch/roll here is just noise from
+            // the angle the tag happened to be viewed at, and must be discarded.
+            var rawRelativeRotation = sessionTagRotation * Quaternion.Inverse(knownRoomPose.rotation);
+            var flatForward = Vector3.ProjectOnPlane(rawRelativeRotation * Vector3.forward, Vector3.up);
+            var sampleRoomOriginRotation = Quaternion.LookRotation(flatForward, Vector3.up);
+            var sampleRoomOriginPosition = sessionTagPosition - sampleRoomOriginRotation * knownRoomPose.position;
+
+            // Accumulate samples over a short window rather than trusting the very
+            // first detection - smooths out both single-frame noise and any
+            // transient tracking disturbance from recent head movement. The window
+            // must be a continuous run of sightings: if the tag drops out for longer
+            // than maxSampleGapSeconds, start over rather than averaging a sample
+            // from long ago with one from now.
+            if (acquiring && Time.time - lastSampleTime > maxSampleGapSeconds)
+            {
+                Debug.Log($"[AprilTagRoomLocalizer] Lost tag {acquiringTagId} for {Time.time - lastSampleTime:F2}s after {sampleCount} sample(s); restarting acquisition");
+                acquiring = false;
+            }
+
+            if (!acquiring)
+            {
+                acquiring = true;
+                acquiringTagId = det.ID;
+                firstSampleTime = Time.time;
+                positionSum = Vector3.zero;
+                forwardSum = Vector3.zero;
+                pixelCenterSum = Vector2.zero;
+                cameraLocalPositionSum = Vector3.zero;
+                sampleCount = 0;
+            }
+
+            positionSum += sampleRoomOriginPosition;
+            forwardSum += sampleRoomOriginRotation * Vector3.forward;
+            pixelCenterSum += new Vector2((float)det.Center.x, (float)det.Center.y);
+            cameraLocalPositionSum += tagPositionCameraLocal;
+            sampleCount++;
+            lastSampleTime = Time.time;
+
+            if (Time.time - firstSampleTime < acquisitionWindowSeconds)
+            {
+                break;
+            }
+
+            var estimate = new RoomOriginEstimate(
+                det.ID,
+                positionSum / sampleCount,
+                Quaternion.LookRotation(forwardSum.normalized, Vector3.up),
+                sampleCount,
+                cameraLocalPositionSum / sampleCount);
+            var avgPixelCenter = pixelCenterSum / sampleCount;
+
+            armed = false;
+            acquiring = false;
+
+            Debug.Log($"[AprilTagRoomLocalizer] Locked using tag {det.ID} {Time.time - armedTime:F1}s after acquisition began, averaged {sampleCount} samples over {Time.time - firstSampleTime:F1}s; avg tag pixel center=({avgPixelCenter.x:F1},{avgPixelCenter.y:F1}) principalPoint=({principalPointCx:F1},{principalPointCy:F1}); avg tagPositionCameraLocal={estimate.TagPositionCameraLocal}; room origin at world pos={estimate.Position} rot={estimate.Rotation.eulerAngles}");
+
+            EstimateAcquired?.Invoke(estimate);
+            break;
+        }
+    }
+
+    private static void ConvertToImageU8(Color32[] src, ImageU8 image)
+    {
+        var width = image.Width;
+        var height = image.Height;
+        var stride = image.Stride;
+        var dst = image.Buffer;
+
+        var offsSrc = 0;
+        var offsDst = stride * (height - 1);
+
+        for (var y = 0; y < height; y++)
+        {
+            for (var x = 0; x < width; x++)
+            {
+                dst[offsDst + x] = src[offsSrc + x].g;
+            }
+            offsSrc += width;
+            offsDst -= stride;
+        }
+    }
+
+    private void OnDestroy()
+    {
+        image?.Dispose();
+        if (detector != null && family != null)
+        {
+            detector.RemoveFamily(family);
+        }
+        family?.Dispose();
+        detector?.Dispose();
+    }
+}
