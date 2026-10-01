@@ -122,7 +122,26 @@ public class AprilTagBoxPlacement : MonoBehaviour
             yield break;
         }
 
-        var config = JsonUtility.FromJson<RoomConfig>(json);
+        // Without this, a malformed config (e.g. a leading zero like "00", which
+        // isn't valid JSON) throws inside the coroutine and silently kills Start(),
+        // leaving the box at the session origin with no other sign of what failed.
+        RoomConfig config;
+        try
+        {
+            config = JsonUtility.FromJson<RoomConfig>(json);
+        }
+        catch (System.ArgumentException e)
+        {
+            Debug.LogError($"[AprilTagBoxPlacement] Room config '{configFileName}' is not valid JSON - no tags will be recognized: {e.Message}");
+            yield break;
+        }
+
+        if (config?.tags == null || config.tags.Length == 0)
+        {
+            Debug.LogError($"[AprilTagBoxPlacement] Room config '{configFileName}' lists no tags - nothing can be recognized");
+            yield break;
+        }
+
         tagRegistry.Clear();
         foreach (var tag in config.tags)
         {
