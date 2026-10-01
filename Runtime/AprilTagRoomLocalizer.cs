@@ -213,7 +213,9 @@ public class AprilTagRoomLocalizer : MonoBehaviour
 
     private void Update()
     {
-        if (detector == null || readbackInFlight || !armed)
+        // The camera pauses with the app (e.g. headset taken off); querying it
+        // then logs an error every frame.
+        if (detector == null || readbackInFlight || !armed || !cameraAccess.IsPlaying)
         {
             return;
         }
