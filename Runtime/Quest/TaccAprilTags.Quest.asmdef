@@ -1,0 +1,26 @@
+{
+    "name": "TaccAprilTags.Quest",
+    "rootNamespace": "",
+    "references": [
+        "TaccAprilTags.Runtime",
+        "AprilTag.Runtime",
+        "meta.xr.mrutilitykit"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "TACC_APRILTAGS_META"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.meta.xr.mrutilitykit",
+            "expression": "0.0.0",
+            "define": "TACC_APRILTAGS_META"
+        }
+    ],
+    "noEngineReferences": false
+}

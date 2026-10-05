@@ -134,6 +134,15 @@ tags 7/9 with ~10–25 cm residuals and land between the per-tag cubes.
 
 ## iPhone port plan
 
+**Status (2026-10-05, Mac):** steps 1 and 4 are done — `AprilTagCameraSource`
+(abstract component) + `PassthroughCameraSource` (Quest, same behavior as
+before), and the Meta code now lives in `Runtime/Quest` (asmdef
+`TaccAprilTags.Quest`, compiled only when `com.meta.xr.mrutilitykit` is
+installed). Verified by headless compile: core alone for iOS, core + Quest with
+MRUK 203. **Not yet re-tested on Quest hardware.** AprilTags2 scenes that place
+`AprilTagRoomLocalizer` directly must add a `PassthroughCameraSource`. Next:
+an ARKit source (step 2) and an iOS test app (step 3).
+
 The detector already ships an iOS arm64 static library
 (`Plugin/iOS/libAprilTag.a`) — no native rebuild needed. Port only what is
 Quest-specific:

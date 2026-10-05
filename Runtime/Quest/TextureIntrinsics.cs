@@ -1,24 +1,11 @@
 using Meta.XR;
 using UnityEngine;
 
-// Pinhole intrinsics expressed in the pixel space the AprilTag detector actually
-// sees: the texture delivered by PassthroughCameraAccess.GetTexture(), after
-// ConvertToImageU8 flips it so row 0 is the top of the image.
-public readonly struct TextureIntrinsics
+// Maps PassthroughCameraAccess's sensor intrinsics onto the texture it actually
+// delivers, in the pixel space the AprilTag detector sees after
+// PassthroughCameraSource flips the texture so row 0 is the top of the image.
+public static class TextureIntrinsics
 {
-    public readonly float Fx;
-    public readonly float Fy;
-    public readonly float Cx;
-    public readonly float Cy;
-
-    private TextureIntrinsics(float fx, float fy, float cx, float cy)
-    {
-        Fx = fx;
-        Fy = fy;
-        Cx = cx;
-        Cy = cy;
-    }
-
     // Intrinsics.FocalLength/PrincipalPoint are reported relative to
     // Intrinsics.SensorResolution, which can differ from the delivered texture
     // (confirmed: SensorResolution reports 1280x1280 while the live texture is
@@ -31,7 +18,7 @@ public readonly struct TextureIntrinsics
     // Sensor coordinates have their origin at the bottom-left (MRUK's viewport
     // convention), while the detector's image has row 0 at the top, so the
     // principal point's Y is flipped as well.
-    public static TextureIntrinsics ForTexture(PassthroughCameraAccess.CameraIntrinsics intrinsics, int width, int height)
+    public static PinholeIntrinsics ForTexture(PassthroughCameraAccess.CameraIntrinsics intrinsics, int width, int height)
     {
         var sensorResolution = (Vector2)intrinsics.SensorResolution;
         var scaleFactor = new Vector2(width, height) / sensorResolution;
@@ -46,8 +33,6 @@ public readonly struct TextureIntrinsics
         var cx = (intrinsics.PrincipalPoint.x - cropOrigin.x) * pixelsPerSensorPixel;
         var cyFromBottom = (intrinsics.PrincipalPoint.y - cropOrigin.y) * pixelsPerSensorPixel;
 
-        return new TextureIntrinsics(fx, fy, cx, height - cyFromBottom);
+        return new PinholeIntrinsics(width, height, fx, fy, cx, height - cyFromBottom);
     }
-
-    public override string ToString() => $"fx={Fx:F1} fy={Fy:F1} cx={Cx:F1} cy={Cy:F1}";
 }

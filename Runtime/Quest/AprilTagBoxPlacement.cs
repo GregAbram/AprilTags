@@ -4,7 +4,9 @@ using UnityEngine;
 // Places one box at a fixed room-frame pose using the first tag that locks after
 // startup. Detection lives in AprilTagRoomLocalizer: an existing one on this
 // GameObject is used as-is, otherwise one is added and configured from the
-// fields below (kept so scenes made before the split keep working).
+// fields below (kept so scenes made before the split keep working). Likewise a
+// PassthroughCameraSource is added for cameraAccess unless this GameObject
+// already has a camera source.
 public class AprilTagBoxPlacement : MonoBehaviour
 {
     [SerializeField] private PassthroughCameraAccess cameraAccess;
@@ -22,11 +24,19 @@ public class AprilTagBoxPlacement : MonoBehaviour
 
     private void Awake()
     {
+        var cameraSource = GetComponent<AprilTagCameraSource>();
+        if (cameraSource == null)
+        {
+            var passthroughSource = gameObject.AddComponent<PassthroughCameraSource>();
+            passthroughSource.Configure(cameraAccess);
+            cameraSource = passthroughSource;
+        }
+
         localizer = GetComponent<AprilTagRoomLocalizer>();
         if (localizer == null)
         {
             localizer = gameObject.AddComponent<AprilTagRoomLocalizer>();
-            localizer.Configure(cameraAccess, quadDecimate, configFileName,
+            localizer.Configure(cameraSource, quadDecimate, configFileName,
                 trackingSettleDelaySeconds, acquisitionWindowSeconds, maxSampleGapSeconds, maxOffAxisAngleDegrees);
         }
 

@@ -2,11 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using AprilTag.Interop;
-using Meta.XR;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Networking;
-using UnityEngine.Rendering;
 
 // The room origin's pose in this session's world space, as solved from one tag.
 public readonly struct RoomOriginEstimate
@@ -41,10 +39,12 @@ public readonly struct RoomOriginEstimate
 // Detects the tags listed in the room config and solves for the room origin's
 // pose in this session. Each BeginAcquisition() produces one estimate - from
 // whichever known tag first stays in view for a full acquisition window - and
-// raises EstimateAcquired; detection is idle between acquisitions.
+// raises EstimateAcquired; detection is idle between acquisitions. Frames come
+// from an AprilTagCameraSource: the assigned one, else one on this GameObject,
+// else the first in the scene.
 public class AprilTagRoomLocalizer : MonoBehaviour
 {
-    [SerializeField] private PassthroughCameraAccess cameraAccess;
+    [SerializeField] private AprilTagCameraSource cameraSource;
     [SerializeField] private int quadDecimate = 2;
     [SerializeField] private string configFileName = "room_config.json";
     [SerializeField] private float trackingSettleDelaySeconds = 2f;
@@ -65,8 +65,6 @@ public class AprilTagRoomLocalizer : MonoBehaviour
     private bool acquiring;
     private int acquiringTagId;
     private float lastSampleTime;
-    private Vector3 pendingCameraPosition;
-    private Quaternion pendingCameraRotation;
     private float firstSampleTime;
     private Vector3 positionSum;
     private Vector3 forwardSum;
@@ -77,9 +75,8 @@ public class AprilTagRoomLocalizer : MonoBehaviour
 
     private Detector detector;
     private Family family;
-    private ImageU8 image;
-    private Color32[] pixelBuffer;
-    private bool readbackInFlight;
+    private bool frameInFlight;
+    private Action<bool, CameraFrame> onFrameCaptured;
     private float principalPointCx;
     private float principalPointCy;
     private float focalLengthFx;
@@ -87,10 +84,10 @@ public class AprilTagRoomLocalizer : MonoBehaviour
     private readonly Dictionary<int, (Vector3 position, Quaternion rotation, float sizeMeters)> tagRegistry = new();
 
     // For components that add the localizer at runtime; call before its Start().
-    public void Configure(PassthroughCameraAccess camera, int decimate, string configFile,
+    public void Configure(AprilTagCameraSource camera, int decimate, string configFile,
         float settleDelaySeconds, float windowSeconds, float sampleGapSeconds, float offAxisAngleDegrees)
     {
-        cameraAccess = camera;
+        cameraSource = camera;
         quadDecimate = decimate;
         configFileName = configFile;
         trackingSettleDelaySeconds = settleDelaySeconds;
@@ -116,15 +113,23 @@ public class AprilTagRoomLocalizer : MonoBehaviour
 
     private System.Collections.IEnumerator Start()
     {
-        yield return LoadRoomConfig();
-
-        while (!cameraAccess.IsPlaying)
+        if (cameraSource == null)
         {
-            yield return null;
+            cameraSource = GetComponent<AprilTagCameraSource>();
+        }
+        if (cameraSource == null)
+        {
+            cameraSource = FindAnyObjectByType<AprilTagCameraSource>();
+        }
+        if (cameraSource == null)
+        {
+            Debug.LogError("[AprilTagRoomLocalizer] No AprilTagCameraSource assigned or found in the scene (on Quest, add a PassthroughCameraSource) - nothing will be detected");
+            yield break;
         }
 
-        Texture tex;
-        while ((tex = cameraAccess.GetTexture()) == null)
+        yield return LoadRoomConfig();
+
+        while (!cameraSource.IsPlaying || !cameraSource.TryGetIntrinsics(out _))
         {
             yield return null;
         }
@@ -135,29 +140,29 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         // allowing a lock so early, less-settled poses aren't used.
         yield return new WaitForSeconds(trackingSettleDelaySeconds);
 
-        var width = tex.width;
-        var height = tex.height;
-        pixelBuffer = new Color32[width * height];
+        PinholeIntrinsics intrinsics;
+        while (!cameraSource.TryGetIntrinsics(out intrinsics))
+        {
+            yield return null;
+        }
 
         detector = Detector.Create();
         detector.QuadDecimate = quadDecimate;
         family = Family.CreateTagStandard41h12();
         detector.AddFamily(family);
-        image = ImageU8.Create(width, height);
+        onFrameCaptured = OnFrameCaptured;
 
-        // Map sensor intrinsics onto the delivered texture (crop + uniform scale,
-        // see TextureIntrinsics). An earlier empirical focal scale factor (0.5543)
-        // made centered depth measurements match, but ground-truth testing at a
-        // known off-axis angle showed it produces a large lateral/angular error -
-        // the remaining depth error was tag size, not focal length (see
-        // sizeMeters in room_config.json).
-        var textureIntrinsics = TextureIntrinsics.ForTexture(cameraAccess.Intrinsics, width, height);
-        focalLengthFx = textureIntrinsics.Fx;
-        focalLengthFy = textureIntrinsics.Fy;
-        principalPointCx = textureIntrinsics.Cx;
-        principalPointCy = textureIntrinsics.Cy;
+        // An earlier empirical focal scale factor (0.5543) made centered depth
+        // measurements match on Quest, but ground-truth testing at a known
+        // off-axis angle showed it produces a large lateral/angular error - the
+        // remaining depth error was tag size, not focal length (see sizeMeters in
+        // room_config.json). Use the source's intrinsics as reported.
+        focalLengthFx = intrinsics.Fx;
+        focalLengthFy = intrinsics.Fy;
+        principalPointCx = intrinsics.Cx;
+        principalPointCy = intrinsics.Cy;
 
-        Debug.Log($"[AprilTagRoomLocalizer] Texture {width}x{height}, sensor {cameraAccess.Intrinsics.SensorResolution}; texture intrinsics {textureIntrinsics}");
+        Debug.Log($"[AprilTagRoomLocalizer] Camera intrinsics {intrinsics}");
     }
 
     private System.Collections.IEnumerator LoadRoomConfig()
@@ -224,43 +229,29 @@ public class AprilTagRoomLocalizer : MonoBehaviour
     {
         // The camera pauses with the app (e.g. headset taken off); querying it
         // then logs an error every frame.
-        if (detector == null || readbackInFlight || !armed || !cameraAccess.IsPlaying)
+        if (detector == null || frameInFlight || !armed || !cameraSource.IsPlaying)
         {
             return;
         }
 
-        var tex = cameraAccess.GetTexture();
-        if (tex == null)
+        // Set before requesting: a source may deliver the frame synchronously.
+        frameInFlight = true;
+        if (!cameraSource.TryRequestFrame(onFrameCaptured))
         {
-            return;
+            frameInFlight = false;
         }
-
-        // Capture the camera pose now, alongside the texture - not later when the
-        // async readback completes, since that's 1+ frames later and would be
-        // mismatched with this image if the head is moving.
-        var cameraPoseNow = cameraAccess.GetCameraPose();
-        pendingCameraPosition = cameraPoseNow.position;
-        pendingCameraRotation = cameraPoseNow.rotation;
-
-        readbackInFlight = true;
-        AsyncGPUReadback.Request(tex, 0, TextureFormat.RGBA32, OnReadbackComplete);
     }
 
-    private void OnReadbackComplete(AsyncGPUReadbackRequest request)
+    private void OnFrameCaptured(bool succeeded, CameraFrame frame)
     {
-        readbackInFlight = false;
+        frameInFlight = false;
 
-        if (!armed || request.hasError || detector == null)
+        if (!armed || !succeeded || detector == null)
         {
             return;
         }
 
-        var data = request.GetData<Color32>();
-        data.CopyTo(pixelBuffer);
-
-        ConvertToImageU8(pixelBuffer, image);
-
-        using var detections = detector.Detect(image);
+        using var detections = detector.Detect(frame.Image);
         for (var i = 0; i < detections.Length; i++)
         {
             ref var det = ref detections[i];
@@ -310,8 +301,8 @@ public class AprilTagRoomLocalizer : MonoBehaviour
             var tagPositionCameraLocal = new Vector3(tagPosition.x, tagPosition.y, tagPosition.z);
             var tagRotationCameraLocal = new Quaternion(flippedQuat.x, flippedQuat.y, flippedQuat.z, flippedQuat.w);
 
-            var sessionTagPosition = pendingCameraPosition + pendingCameraRotation * tagPositionCameraLocal;
-            var sessionTagRotation = pendingCameraRotation * tagRotationCameraLocal;
+            var sessionTagPosition = frame.CameraPosition + frame.CameraRotation * tagPositionCameraLocal;
+            var sessionTagRotation = frame.CameraRotation * tagRotationCameraLocal;
 
             // Solve for the room origin's pose in this session's world space, given
             // this tag's known fixed pose in room coordinates and its just-detected
@@ -383,30 +374,8 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         }
     }
 
-    private static void ConvertToImageU8(Color32[] src, ImageU8 image)
-    {
-        var width = image.Width;
-        var height = image.Height;
-        var stride = image.Stride;
-        var dst = image.Buffer;
-
-        var offsSrc = 0;
-        var offsDst = stride * (height - 1);
-
-        for (var y = 0; y < height; y++)
-        {
-            for (var x = 0; x < width; x++)
-            {
-                dst[offsDst + x] = src[offsSrc + x].g;
-            }
-            offsSrc += width;
-            offsDst -= stride;
-        }
-    }
-
     private void OnDestroy()
     {
-        image?.Dispose();
         if (detector != null && family != null)
         {
             detector.RemoveFamily(family);

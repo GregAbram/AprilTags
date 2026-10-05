@@ -1,8 +1,11 @@
 # TACC AprilTag Colocation
 
-Multi-user AR colocation for Meta Quest: wall-mounted AprilTags let independent
-headset sessions agree on a shared physical room coordinate system, so content
+Multi-user AR colocation: wall-mounted AprilTags let independent AR sessions
+agree on a shared physical room coordinate system, so content
 placed by room coordinates appears in the same physical spot for every user.
+
+Platforms: **Meta Quest 3** (tested). iPhone (ARKit) support is in progress;
+the core is already free of any platform SDK.
 
 ## Prerequisites (manual installs)
 
@@ -16,10 +19,14 @@ this package:
    Install package from git URL →
    `https://github.com/GregAbram/AprilTag-UnityPackage.git#82a5ae5ed072011fe0bf47f80ebdb92efad4a6fd`
    (pinned to the commit this package was tested with)
+
+For **Meta Quest**, also:
+
 2. **Meta XR Core SDK** — via the Unity Asset Store (requires a Unity account
-   sign-in); installing this also registers Meta's scoped registry, which lets
-   `com.meta.xr.mrutilitykit` (a listed dependency here) resolve normally
-   afterward.
+   sign-in); installing this also registers Meta's scoped registry. Then
+   install **Meta MR Utility Kit** (`com.meta.xr.mrutilitykit`). The Quest
+   components (`Runtime/Quest`, assembly `TaccAprilTags.Quest`) compile only
+   when MRUK is present; without it, only the platform-neutral core is built.
 3. Your project must target **Android**, with **OpenXR** enabled under
    XR Plug-in Management, and the Meta Quest feature group / Touch controller
    profile configured. See Meta's own Passthrough Camera API setup docs.
@@ -29,7 +36,7 @@ this package:
 1. Each physical AprilTag is measured once and recorded in a JSON config
    (position + facing direction, in a room coordinate system you define).
 2. At runtime, `AprilTagRoomLocalizer` detects any tag in that config in the
-   passthrough camera image, solves for the room origin's pose in the current
+   camera image, solves for the room origin's pose in the current
    session's (arbitrary) tracking space, and raises an event with the result.
    Content is then placed using room-frame coordinates rather than
    session-relative ones.
@@ -39,13 +46,21 @@ this package:
 
 ## Components
 
+Platform-neutral core (`Runtime/`, assembly `TaccAprilTags.Runtime`):
+
 - **`AprilTagRoomLocalizer`** — loads the room config, runs detection on
-  `PassthroughCameraAccess` frames, and produces one `RoomOriginEstimate` per
+  frames from an `AprilTagCameraSource`, and produces one `RoomOriginEstimate` per
   `BeginAcquisition()` call via the `EstimateAcquired` event. An estimate
   averages a 1 s window of continuous sightings of a single tag; the window
   restarts if the tag is unseen for more than 0.25 s. Detection waits 2 s after
   startup for tracking to settle, and ignores detections more than 20° off the
-  image center. All of these are inspector fields.
+  image center. All of these are inspector fields. It uses the camera source
+  assigned in the inspector, else one on the same GameObject, else the first
+  in the scene.
+- **`AprilTagCameraSource`** — abstract component that delivers grayscale
+  frames (row 0 at the top), the camera's world pose at capture time, and
+  pinhole intrinsics (`PinholeIntrinsics`) in that frame's pixel space. One
+  implementation per platform.
 - **`RoomOriginEstimate`** — the room origin's pose in session world space
   from one tag (`RoomToWorld(roomPosition)` maps room coordinates to world),
   plus that tag's averaged detected world position and its configured room
@@ -59,11 +74,24 @@ this package:
   origin error per 2.2 m of tag-to-origin distance), so prefer `RoomFit`
   whenever more than one tag can be scanned. Feed it the `TagWorldPosition` /
   `TagRoomPosition` pairs from several estimates.
+
+Meta Quest (`Runtime/Quest/`, assembly `TaccAprilTags.Quest`):
+
+- **`PassthroughCameraSource`** — camera source for `PassthroughCameraAccess`
+  (GPU readback of its texture). Uses the first `PassthroughCameraAccess` in
+  the scene if none is assigned.
 - **`AprilTagBoxPlacement`** — simple drop-in: places one transform at a fixed
   room pose using the first tag acquired after startup. Uses an
-  `AprilTagRoomLocalizer` on the same GameObject, or adds one if absent.
+  `AprilTagRoomLocalizer` on the same GameObject, or adds one if absent, and
+  adds a `PassthroughCameraSource` if the GameObject has no camera source.
 - **`TextureIntrinsics`** — maps Meta's sensor intrinsics onto the delivered
   camera texture (see Calibration notes).
+
+**Upgrading from 0.1:** `AprilTagRoomLocalizer` no longer has a camera field.
+In scenes that place a localizer directly, add a `PassthroughCameraSource`
+(to the same GameObject, or anywhere in the scene); otherwise the localizer
+logs an error and detects nothing. `AprilTagBoxPlacement` scenes need no
+change.
 
 ## Room config
 
@@ -139,7 +167,7 @@ malformed or empty config logs an error and no tags will be recognized.
   cx ≈ 643.7, cy ≈ 478.6. The detector package's own `TagDetector` is not used
   because it assumes a single FOV and a centered principal point; this package
   calls its `Interop` layer directly with explicit fx/fy/cx/cy.
-- **Image orientation:** frames are flipped vertically (Unity textures are
+- **Image orientation:** on Quest, frames are flipped vertically (Unity textures are
   bottom-up) and the green channel is used as grayscale. A wrongly oriented
   image makes tags undetectable (mirrored codes don't decode), so if nothing is
   ever detected on new hardware, suspect orientation first.
@@ -152,7 +180,8 @@ malformed or empty config logs an error and no tags will be recognized.
 
 ## Troubleshooting
 
-- Logs are prefixed `[AprilTagRoomLocalizer]` / `[AprilTagBoxPlacement]`:
+- Logs are prefixed `[AprilTagRoomLocalizer]`, `[PassthroughCameraSource]`,
+  `[AprilTagBoxPlacement]`:
   `adb logcat | grep "\[AprilTag"`. The lock line includes the tag's
   camera-local position (z = distance), pixel center and intrinsics.
 - **Runtime-created objects render pink or differently per eye** (URP,
