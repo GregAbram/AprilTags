@@ -10,9 +10,12 @@ Unity's package manager can only auto-resolve dependencies that come from a
 registry. These do not, and must be installed manually **before** installing
 this package:
 
-1. **[edu.umn.cs.ivlab.apriltag](https://github.com/ivlab/AprilTag-UnityPackage)**
-   — Package Manager → **+** → Install package from git URL →
-   `https://github.com/ivlab/AprilTag-UnityPackage.git`
+1. **[edu.umn.cs.ivlab.apriltag](https://github.com/GregAbram/AprilTag-UnityPackage)**
+   (a fork of [ivlab/AprilTag-UnityPackage](https://github.com/ivlab/AprilTag-UnityPackage),
+   kept so this dependency can't disappear) — Package Manager → **+** →
+   Install package from git URL →
+   `https://github.com/GregAbram/AprilTag-UnityPackage.git#82a5ae5ed072011fe0bf47f80ebdb92efad4a6fd`
+   (pinned to the commit this package was tested with)
 2. **Meta XR Core SDK** — via the Unity Asset Store (requires a Unity account
    sign-in); installing this also registers Meta's scoped registry, which lets
    `com.meta.xr.mrutilitykit` (a listed dependency here) resolve normally
