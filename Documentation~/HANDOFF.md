@@ -168,6 +168,15 @@ runs whenever a localizer is destroyed). The iPhone demo
 (`~/Unity/Projects/AprilTagsiOS`, local git only) links in Xcode with no
 workarounds; not yet run on a phone.
 
+**iPhone working (2026-10-06):** iPhone 11 / iOS 26.6.2 locks tags with
+`Flip Vertical` off (CPU image rows are already top-down); CPU image
+1920x1440, fx=fy=1488.5, cx=963.5, cy=682.7; first lock: tag 8 at 0.64 m in
+1.0 s / 21 samples. Fixes needed on the way: StreamingAssets on iOS is a plain
+path (localizer now reads it with File, UnityWebRequest only for Android URLs);
+in the demo project, XR manager automaticLoading/Running and the
+`UNITY_XR_ARKIT_LOADER_ENABLED` define must be set explicitly when set up in
+batchmode. Signing uses a free personal team (7-day profiles, 3 devices).
+
 The detector already ships an iOS arm64 static library
 (`Plugin/iOS/libAprilTag.a`) — no native rebuild needed. Port only what is
 Quest-specific:

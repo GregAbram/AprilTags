@@ -174,8 +174,23 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         {
             json = File.ReadAllText(overridePath);
         }
+        else if (!Application.streamingAssetsPath.Contains("://"))
+        {
+            // iOS and desktop: StreamingAssets is a plain directory, which
+            // UnityWebRequest can't load from on iOS.
+            var streamingPath = Path.Combine(Application.streamingAssetsPath, configFileName);
+            if (File.Exists(streamingPath))
+            {
+                json = File.ReadAllText(streamingPath);
+            }
+            else
+            {
+                Debug.LogError($"[AprilTagRoomLocalizer] No room config at {streamingPath} or {overridePath}");
+            }
+        }
         else
         {
+            // Android: StreamingAssets is inside the APK, reachable only as a URL.
             var streamingPath = Path.Combine(Application.streamingAssetsPath, configFileName);
             using var request = UnityWebRequest.Get(streamingPath);
             yield return request.SendWebRequest();

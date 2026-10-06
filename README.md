@@ -4,8 +4,8 @@ Multi-user AR colocation: wall-mounted AprilTags let independent AR sessions
 agree on a shared physical room coordinate system, so content
 placed by room coordinates appears in the same physical spot for every user.
 
-Platforms: **Meta Quest 3** (tested). **iPhone** via AR Foundation + ARKit
-(camera source written, not yet tested on a device). The core is free of any
+Platforms: **Meta Quest 3** and **iPhone** via AR Foundation + ARKit (both
+tested; iPhone 11, iOS 26). The core is free of any
 platform SDK.
 
 ## Prerequisites (manual installs)
