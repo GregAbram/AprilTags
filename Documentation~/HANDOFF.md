@@ -151,6 +151,13 @@ MRUK 203. **Not yet re-tested on Quest hardware.** AprilTags2 scenes that place
 `AprilTagRoomLocalizer` directly must add a `PassthroughCameraSource`. Next:
 an ARKit source (step 2) and an iOS test app (step 3).
 
+**Update (2026-10-06):** Quest re-tested OK on Windows with the split. Step 2
+written: `Runtime/ARFoundation/ARFoundationCameraSource.cs` (asmdef
+`TaccAprilTags.ARFoundation`, compiled only with AR Foundation). Compiles in
+the new iPhone test project `~/Unity/Projects/AprilTagsiOS` on the Mac (option
+B: AR Foundation/ARKit 6.6.2, no Meta SDK). Untested on device; unknowns are
+image row order (`Flip Vertical` toggle) and the screen-orientation roll.
+
 The detector already ships an iOS arm64 static library
 (`Plugin/iOS/libAprilTag.a`) — no native rebuild needed. Port only what is
 Quest-specific:

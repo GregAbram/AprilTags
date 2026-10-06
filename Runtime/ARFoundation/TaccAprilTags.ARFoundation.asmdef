@@ -1,0 +1,27 @@
+{
+    "name": "TaccAprilTags.ARFoundation",
+    "rootNamespace": "",
+    "references": [
+        "TaccAprilTags.Runtime",
+        "AprilTag.Runtime",
+        "Unity.XR.ARFoundation",
+        "Unity.XR.ARSubsystems"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "TACC_APRILTAGS_ARFOUNDATION"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.xr.arfoundation",
+            "expression": "6.0.0",
+            "define": "TACC_APRILTAGS_ARFOUNDATION"
+        }
+    ],
+    "noEngineReferences": false
+}

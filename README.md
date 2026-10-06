@@ -4,8 +4,9 @@ Multi-user AR colocation: wall-mounted AprilTags let independent AR sessions
 agree on a shared physical room coordinate system, so content
 placed by room coordinates appears in the same physical spot for every user.
 
-Platforms: **Meta Quest 3** (tested). iPhone (ARKit) support is in progress;
-the core is already free of any platform SDK.
+Platforms: **Meta Quest 3** (tested). **iPhone** via AR Foundation + ARKit
+(camera source written, not yet tested on a device). The core is free of any
+platform SDK.
 
 ## Prerequisites (manual installs)
 
@@ -30,6 +31,12 @@ For **Meta Quest**, also:
 3. Your project must target **Android**, with **OpenXR** enabled under
    XR Plug-in Management, and the Meta Quest feature group / Touch controller
    profile configured. See Meta's own Passthrough Camera API setup docs.
+
+For **iPhone**, also install **AR Foundation** and the **Apple ARKit XR Plugin**
+(6.x; tested to compile with 6.6.2), target iOS, and enable ARKit under XR
+Plug-in Management. The AR Foundation components (`Runtime/ARFoundation`,
+assembly `TaccAprilTags.ARFoundation`) compile only when AR Foundation is
+present.
 
 ## How it works
 
@@ -86,6 +93,16 @@ Meta Quest (`Runtime/Quest/`, assembly `TaccAprilTags.Quest`):
   adds a `PassthroughCameraSource` if the GameObject has no camera source.
 - **`TextureIntrinsics`** — maps Meta's sensor intrinsics onto the delivered
   camera texture (see Calibration notes).
+
+AR Foundation / iPhone (`Runtime/ARFoundation/`, assembly
+`TaccAprilTags.ARFoundation`):
+
+- **`ARFoundationCameraSource`** — camera source for `ARCameraManager`: copies
+  the Y (luminance) plane of the latest CPU image and uses ARKit's intrinsics
+  for it. The CPU image is always in the sensor's landscape orientation, so
+  the camera pose is rolled to match the current screen orientation. Has a
+  `Flip Vertical` toggle in case tags never detect on a device. Uses the first
+  `ARCameraManager` in the scene if none is assigned.
 
 **Upgrading from 0.1:** `AprilTagRoomLocalizer` no longer has a camera field.
 In scenes that place a localizer directly, add a `PassthroughCameraSource`
