@@ -10,7 +10,7 @@ contradict the README.
 | What | Where | Notes |
 |---|---|---|
 | This package (`edu.tacc.apriltags`) | github.com/GregAbram/AprilTags | Up to date on GitHub. |
-| AprilTag detector (`edu.umn.cs.ivlab.apriltag`) | github.com/GregAbram/AprilTag-UnityPackage | Fork of ivlab's. Consume pinned: `https://github.com/GregAbram/AprilTag-UnityPackage.git#82a5ae5ed072011fe0bf47f80ebdb92efad4a6fd` |
+| AprilTag detector (`edu.umn.cs.ivlab.apriltag`) | github.com/GregAbram/AprilTag-UnityPackage | Fork of ivlab's. Consume pinned: `https://github.com/GregAbram/AprilTag-UnityPackage.git#e7fb480608798b693191f989413ca03eef189961` |
 | Quest test app "AprilTags2" | Windows: `~/Unity/AprilTags2` | Local git repo only, **not on GitHub yet**. Unity 6000.3.10f1, app id `edu.utexas.tacc.apriltags2`. |
 | Original Quest app "AprilTag" | Windows: `~/Unity/AprilTag` | Not in git. Its `room_config.json` still has the wrong sizes/yaws (see below). |
 
@@ -157,6 +157,16 @@ written: `Runtime/ARFoundation/ARFoundationCameraSource.cs` (asmdef
 the new iPhone test project `~/Unity/Projects/AprilTagsiOS` on the Mac (option
 B: AR Foundation/ARKit 6.6.2, no Meta SDK). Untested on device; unknowns are
 image row order (`Flip Vertical` toggle) and the screen-orientation roll.
+
+**Detector fork fixed (e7fb480, 2026-10-06):** its iOS `libAprilTag.a.meta`
+lacked an iOS platform entry (library never reached Xcode → undefined
+`_apriltag_*`); `Family.ReleaseHandle` called *both* families' destroy
+functions on one handle (double free on Android, where both exist); and
+tag36h11 exists only in the Android library, so its bindings are now compiled
+out on iOS. **Quest builds should move to the new pin too** (the double free
+runs whenever a localizer is destroyed). The iPhone demo
+(`~/Unity/Projects/AprilTagsiOS`, local git only) links in Xcode with no
+workarounds; not yet run on a phone.
 
 The detector already ships an iOS arm64 static library
 (`Plugin/iOS/libAprilTag.a`) — no native rebuild needed. Port only what is

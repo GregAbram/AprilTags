@@ -18,7 +18,7 @@ this package:
    (a fork of [ivlab/AprilTag-UnityPackage](https://github.com/ivlab/AprilTag-UnityPackage),
    kept so this dependency can't disappear) — Package Manager → **+** →
    Install package from git URL →
-   `https://github.com/GregAbram/AprilTag-UnityPackage.git#82a5ae5ed072011fe0bf47f80ebdb92efad4a6fd`
+   `https://github.com/GregAbram/AprilTag-UnityPackage.git#e7fb480608798b693191f989413ca03eef189961`
    (pinned to the commit this package was tested with)
 
 For **Meta Quest**, also:
