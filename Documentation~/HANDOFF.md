@@ -31,8 +31,8 @@ Mac, use a git URL or a local path to a clone.
   **several tags' positions only**, ignoring each tag's own orientation.
   Weighted 2D Kabsch/Procrustes in the horizontal plane; returns per-tag
   residuals in room axes. Verified on synthetic data (exact without noise;
-  ≤0.52° yaw error with 1 cm noise on this room's three tags). **Not yet run on
-  device.**
+  ≤0.52° yaw error with 1 cm noise on this room's three tags). Verified on
+  Quest 3 on 2026-10-06 (see "Measured results").
 - `TextureIntrinsics` — maps Meta's sensor intrinsics onto the delivered texture
   (Quest-specific; see "Intrinsics" below).
 - `AprilTagBoxPlacement` — thin backward-compatible wrapper: one box at a room
@@ -91,10 +91,18 @@ the fit implies the room is 4.46 m wall-to-wall vs 4.61 m measured):
   far away and well below image center). 1° of yaw ≈ 4 cm of origin error per
   2.2 m of tag-to-origin distance — the motivation for `RoomFit`.
 
-**Pending test:** build AprilTags2 with the RoomFit app script, scan all three
-tags, check the white fit cube and logged residuals. Better still, restore the
-tape-measured x values (tag 7: 0.0, tag 9: −4.61) — the fit should then flag
-tags 7/9 with ~10–25 cm residuals and land between the per-tag cubes.
+**RoomFit on Quest 3 (2026-10-06, package 0.2 with `PassthroughCameraSource`,
+fitted config above):** the camera-source refactor left intrinsics and
+detection unchanged. Per-tag differences from tag 8: tag 7 (−0.1, −0.7, −2.1) cm,
+tag 9 (−1.7, −1.4, −8.0) cm (tag 9's 8 cm is mostly its 1.3° yaw error). The
+3-tag fit landed within 1.7 cm of tag 8's estimate, yaw within 0.5°, RMS
+residual 4.5 cm; residuals tag 7 +5.5 cm x, tag 8 0.9 cm, tag 9 −5.3 cm x.
+So the position-only fit sees tags 7 and 9 ~10.8 cm further apart than the
+fitted config: the room is ~4.56 m wide, not 4.46 m. The single-tag "fit" that
+produced the config was itself biased by yaw errors. A ~1% depth under-read
+(hinted at by the 1 m test) would account for ~5 cm of that, putting the true
+width near the tape's 4.61 m. User judged this good enough; the tape-measured
+re-test was not done.
 
 ## Pitfalls already hit
 
