@@ -125,6 +125,8 @@ public class RoomAnchor : MonoBehaviour
     private Quaternion targetRotation = Quaternion.identity;
     private bool snapNext = true;
     private string lastLoggedState = "";
+    private int lastLoggedCloseSightings = -1;
+    private float lastDistanceLogTime = float.NegativeInfinity;
 
     // Scans at full rate until a tag locks; its frames count like any others.
     public void Rescan()
@@ -142,6 +144,7 @@ public class RoomAnchor : MonoBehaviour
         LastFit = null;
         IsAnchored = false;
         snapNext = true;
+        lastLoggedCloseSightings = -1;
         Debug.Log("[RoomAnchor] Observations cleared; re-anchoring");
     }
 
@@ -451,6 +454,7 @@ public class RoomAnchor : MonoBehaviour
             var rotation = Quaternion.LookRotation(Vector3.ProjectOnPlane(forward, Vector3.up), Vector3.up);
             LastFit = null;
             SetTarget(measured.MeanWorldPosition - rotation * measured.Observations[0].TagRoomPosition, rotation);
+            LogAnchoringProgress(measured.Observations[^1], close);
             if (close >= anchorSamples)
             {
                 IsAnchored = true;
@@ -560,6 +564,22 @@ public class RoomAnchor : MonoBehaviour
         catch (Exception e)
         {
             Debug.LogWarning($"[RoomAnchor] Couldn't save {LearnedPath}: {e.Message}");
+        }
+    }
+
+    // While provisional: each new close sighting, and every few seconds the
+    // distance if the measured tag is only seen from too far to anchor.
+    private void LogAnchoringProgress(TagObservation latest, int closeSightings)
+    {
+        if (closeSightings != lastLoggedCloseSightings && closeSightings > 0)
+        {
+            lastLoggedCloseSightings = closeSightings;
+            Debug.Log($"[RoomAnchor] Tag {latest.TagId} at {latest.Distance:F2} m: {Mathf.Min(closeSightings, anchorSamples)}/{anchorSamples} close sightings (within {anchorMaxDistance:F1} m) to anchor");
+        }
+        else if (latest.Distance > anchorMaxDistance && Time.time - lastDistanceLogTime > 3f)
+        {
+            lastDistanceLogTime = Time.time;
+            Debug.Log($"[RoomAnchor] Tag {latest.TagId} seen at {latest.Distance:F2} m; within {anchorMaxDistance:F1} m needed to anchor ({closeSightings}/{anchorSamples} close sightings so far)");
         }
     }
 

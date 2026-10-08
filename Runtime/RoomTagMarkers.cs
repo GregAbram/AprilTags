@@ -2,8 +2,9 @@ using System.Collections.Generic;
 using UnityEngine;
 
 // Debug view for RoomAnchor: a small marker at the center of every placed tag,
-// as a child of the anchor - red for measured tags (surveyed position), green
-// for learned ones (position learned this or an earlier session). If the room
+// as a child of the anchor - measured tags (surveyed position) yellow while the
+// room is only provisionally placed and red once it is anchored, learned tags
+// (position learned this or an earlier session) green. If the room
 // is right, each marker sits on its real tag. Markers are created as tags
 // become placed, from markerTemplate (left inactive in the scene).
 [RequireComponent(typeof(RoomAnchor))]
@@ -11,6 +12,7 @@ public class RoomTagMarkers : MonoBehaviour
 {
     [SerializeField] private Renderer markerTemplate;
     [SerializeField] private Color measuredColor = new(0.95f, 0.25f, 0.2f);
+    [SerializeField] private Color provisionalColor = new(1f, 0.85f, 0.1f);
     [SerializeField] private Color learnedColor = new(0.25f, 0.85f, 0.35f);
 
     private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
@@ -49,7 +51,7 @@ public class RoomTagMarkers : MonoBehaviour
             marker.gameObject.SetActive(true);
             marker.transform.localPosition = roomPosition;
             marker.transform.localRotation = Quaternion.identity;
-            var color = measured ? measuredColor : learnedColor;
+            var color = !measured ? learnedColor : anchor.IsAnchored ? measuredColor : provisionalColor;
             block.SetColor(BaseColorId, color);
             block.SetColor(ColorId, color);
             marker.SetPropertyBlock(block);

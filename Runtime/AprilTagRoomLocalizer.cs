@@ -102,7 +102,7 @@ public class AprilTagRoomLocalizer : MonoBehaviour
     [SerializeField] private float scanIntervalSeconds = 0.5f;
 
     [Tooltip("Log per-frame timing (image prepare, detection, pose, apply, latency) this often while scanning or acquiring; also when an acquisition ends.")]
-    [SerializeField] private float timingLogIntervalSeconds = 5f;
+    [SerializeField] private float timingLogIntervalSeconds = 30f;
 
     public event Action<RoomOriginEstimate> EstimateAcquired;
     public event Action<TagObservation> TagObserved;
