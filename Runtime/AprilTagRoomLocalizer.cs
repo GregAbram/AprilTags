@@ -78,6 +78,12 @@ public class AprilTagRoomLocalizer : MonoBehaviour
     private Vector3 tagWorldPositionSum;
     private int sampleCount;
 
+    // Per-sample values in the current window, for the per-frame spread logged
+    // on lock (how good a single frame is compared with the window's average).
+    private readonly List<Vector3> sampleTagPositions = new();
+    private readonly List<Vector3> sampleOriginPositions = new();
+    private readonly List<float> sampleYaws = new();
+
     private Detector detector;
     private Family family;
     private bool frameInFlight;
@@ -391,6 +397,9 @@ public class AprilTagRoomLocalizer : MonoBehaviour
                 cameraLocalPositionSum = Vector3.zero;
                 tagWorldPositionSum = Vector3.zero;
                 sampleCount = 0;
+                sampleTagPositions.Clear();
+                sampleOriginPositions.Clear();
+                sampleYaws.Clear();
             }
 
             positionSum += sampleRoomOriginPosition;
@@ -399,6 +408,9 @@ public class AprilTagRoomLocalizer : MonoBehaviour
             cameraLocalPositionSum += tagPositionCameraLocal;
             tagWorldPositionSum += sessionTagPosition;
             sampleCount++;
+            sampleTagPositions.Add(sessionTagPosition);
+            sampleOriginPositions.Add(sampleRoomOriginPosition);
+            sampleYaws.Add(sampleRoomOriginRotation.eulerAngles.y);
             lastSampleTime = Time.time;
 
             if (Time.time - firstSampleTime < acquisitionWindowSeconds)
@@ -421,10 +433,45 @@ public class AprilTagRoomLocalizer : MonoBehaviour
 
             Debug.Log($"[AprilTagRoomLocalizer] Locked using tag {det.ID} {Time.time - armedTime:F1}s after acquisition began, averaged {sampleCount} samples over {Time.time - firstSampleTime:F1}s; avg tag pixel center=({avgPixelCenter.x:F1},{avgPixelCenter.y:F1}) principalPoint=({principalPointCx:F1},{principalPointCy:F1}); avg tagPositionCameraLocal={estimate.TagPositionCameraLocal}; room origin at world pos={estimate.Position} rot={estimate.Rotation.eulerAngles}");
 
+            Debug.Log($"[AprilTagRoomLocalizer] Per-frame spread over {sampleCount} samples (tag {det.ID}, {estimate.TagPositionCameraLocal.magnitude:F2} m): " +
+                      $"tag position {PositionSpread(sampleTagPositions)}; room origin {PositionSpread(sampleOriginPositions)}; yaw {YawSpread(sampleYaws, estimate.Rotation.eulerAngles.y)}");
             LogTiming("locked");
             EstimateAcquired?.Invoke(estimate);
             break;
         }
+    }
+
+    // Standard deviation per axis and of the 3D distance from the mean, plus the
+    // largest single-sample distance, in cm.
+    private static string PositionSpread(List<Vector3> samples)
+    {
+        var mean = Vector3.zero;
+        foreach (var p in samples) mean += p;
+        mean /= samples.Count;
+        var sq = Vector3.zero;
+        float sqDist = 0f, maxDist = 0f;
+        foreach (var p in samples)
+        {
+            var d = p - mean;
+            sq += Vector3.Scale(d, d);
+            sqDist += d.sqrMagnitude;
+            maxDist = Mathf.Max(maxDist, d.magnitude);
+        }
+        var sd = new Vector3(Mathf.Sqrt(sq.x / samples.Count), Mathf.Sqrt(sq.y / samples.Count), Mathf.Sqrt(sq.z / samples.Count)) * 100f;
+        return $"sd ({sd.x:F2}, {sd.y:F2}, {sd.z:F2}) cm, 3D {Mathf.Sqrt(sqDist / samples.Count) * 100f:F2} cm, max {maxDist * 100f:F2} cm";
+    }
+
+    // Standard deviation and largest deviation of sample yaws about the mean, in degrees.
+    private static string YawSpread(List<float> yaws, float meanYaw)
+    {
+        float sq = 0f, max = 0f;
+        foreach (var yaw in yaws)
+        {
+            var d = Mathf.Abs(Mathf.DeltaAngle(meanYaw, yaw));
+            sq += d * d;
+            max = Mathf.Max(max, d);
+        }
+        return $"sd {Mathf.Sqrt(sq / yaws.Count):F2} deg, max {max:F2} deg";
     }
 
     private static double Milliseconds(long from, long to) => (to - from) * 1000.0 / Stopwatch.Frequency;
