@@ -460,6 +460,7 @@ public class RoomAnchor : MonoBehaviour
             if (close >= anchorSamples)
             {
                 IsAnchored = true;
+                LogAnchoringSpread(measured.Observations.Where(o => o.Distance <= anchorMaxDistance).ToList(), rotation);
             }
         }
 
@@ -585,6 +586,36 @@ public class RoomAnchor : MonoBehaviour
             lastDistanceLogTime = Time.time;
             Debug.Log($"[RoomAnchor] Tag {latest.TagId} seen at {latest.Distance:F2} m; within {anchorMaxDistance:F1} m needed to anchor ({closeSightings}/{anchorSamples} close sightings so far)");
         }
+    }
+
+    // How much the close frames that anchored the room disagree on its yaw, and
+    // where the camera was relative to the tag (degrees off square horizontally,
+    // above/below), to tell per-frame noise from viewpoint-dependent bias.
+    private void LogAnchoringSpread(List<TagObservation> close, Quaternion anchoredRotation)
+    {
+        var meanYaw = anchoredRotation.eulerAngles.y;
+        float sq = 0f, min = float.MaxValue, max = float.MinValue;
+        Vector3 view = Vector3.zero;
+        foreach (var o in close)
+        {
+            var d = Mathf.DeltaAngle(meanYaw, o.OriginRotation.eulerAngles.y);
+            sq += d * d;
+            min = Mathf.Min(min, d);
+            max = Mathf.Max(max, d);
+            view += o.CameraPosition - o.WorldPosition;
+        }
+        view /= close.Count;
+
+        // Camera direction from the tag, in room axes, against the direction a
+        // viewer faces the tag from (opposite its facing).
+        var id = close[0].TagId;
+        localizer.TryGetConfiguredTag(id, out _, out var tagRotation, out _);
+        var viewRoom = Quaternion.Inverse(anchoredRotation) * view;
+        var square = -(tagRotation * Vector3.forward);
+        var horizontal = Vector3.SignedAngle(Vector3.ProjectOnPlane(square, Vector3.up), Vector3.ProjectOnPlane(viewRoom, Vector3.up), Vector3.up);
+        var vertical = Mathf.Asin(Mathf.Clamp(viewRoom.normalized.y, -1f, 1f)) * Mathf.Rad2Deg;
+        Debug.Log($"[RoomAnchor] Anchor yaw from tag {id}'s {close.Count} close frames: {meanYaw:F2} deg, per-frame sd {Mathf.Sqrt(sq / close.Count):F2}, range {min:+0.00;-0.00} to {max:+0.00;-0.00} deg; " +
+                  $"camera {view.magnitude:F2} m away, {horizontal:+0.0;-0.0} deg off square, {vertical:+0.0;-0.0} deg above the tag");
     }
 
     private void LogStateChange(int fittedTags)

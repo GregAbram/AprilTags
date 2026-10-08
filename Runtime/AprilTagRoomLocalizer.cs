@@ -56,14 +56,17 @@ public readonly struct TagObservation
     public readonly float Distance;
     // How fast the camera was turning when the frame was taken (deg/s).
     public readonly float RotationSpeed;
+    // Where the camera was when the frame was taken, in this session's world space.
+    public readonly Vector3 CameraPosition;
     public readonly Vector3 TagRoomPosition;
     public readonly Vector3 WorldPosition;
     public readonly Vector3 OriginPosition;
     public readonly Quaternion OriginRotation;
 
     public TagObservation(int tagId, bool measured, bool listed, float time, float distance, float rotationSpeed,
-        Vector3 tagRoomPosition, Vector3 worldPosition, Vector3 originPosition, Quaternion originRotation)
+        Vector3 cameraPosition, Vector3 tagRoomPosition, Vector3 worldPosition, Vector3 originPosition, Quaternion originRotation)
     {
+        CameraPosition = cameraPosition;
         TagId = tagId;
         Measured = measured;
         Listed = listed;
@@ -541,7 +544,7 @@ public class AprilTagRoomLocalizer : MonoBehaviour
             if (!sample.Listed)
             {
                 TagObserved?.Invoke(new TagObservation(sample.TagId, false, false, frameRequestTime, sample.PositionCameraLocal.magnitude,
-                    frameRotationSpeed, Vector3.zero, sessionTagPosition, sessionTagPosition, Quaternion.identity));
+                    frameRotationSpeed, frame.CameraPosition, Vector3.zero, sessionTagPosition, sessionTagPosition, Quaternion.identity));
                 continue;
             }
             var known = tagRegistry[sample.TagId];
@@ -559,7 +562,7 @@ public class AprilTagRoomLocalizer : MonoBehaviour
             var originPosition = sessionTagPosition - originRotation * known.position;
 
             TagObserved?.Invoke(new TagObservation(sample.TagId, known.measured, true, frameRequestTime, sample.PositionCameraLocal.magnitude,
-                frameRotationSpeed, known.position, sessionTagPosition, originPosition, originRotation));
+                frameRotationSpeed, frame.CameraPosition, known.position, sessionTagPosition, originPosition, originRotation));
 
             if (armed && AddAcquisitionSample(sample, known.position, sessionTagPosition, originPosition, originRotation))
             {
