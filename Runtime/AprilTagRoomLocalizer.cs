@@ -176,7 +176,7 @@ public class AprilTagRoomLocalizer : MonoBehaviour
     private bool frameInFlight;
     private long frameRequestTimestamp;
     private float frameRequestTime;
-    private float nextScanTime;
+    private float lastScanRequestTime = float.NegativeInfinity;
     private Task<DetectionResult> pendingDetection;
     private CameraFrame pendingFrame;
     private double pendingPrepareMs;
@@ -371,7 +371,9 @@ public class AprilTagRoomLocalizer : MonoBehaviour
             return;
         }
 
-        var wanted = armed || (continuousScan && Time.time >= nextScanTime);
+        // Due time from the current interval, so a change (e.g. to fast while a
+        // new tag needs samples) applies at once, not after the old interval.
+        var wanted = armed || (continuousScan && Time.time >= lastScanRequestTime + scanIntervalSeconds);
         if (!wanted)
         {
             return;
@@ -386,7 +388,7 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         frameInFlight = true;
         frameRequestTimestamp = Stopwatch.GetTimestamp();
         frameRequestTime = Time.time;
-        nextScanTime = Time.time + scanIntervalSeconds;
+        lastScanRequestTime = Time.time;
         if (!cameraSource.TryRequestFrame(onFrameCaptured))
         {
             frameInFlight = false;
