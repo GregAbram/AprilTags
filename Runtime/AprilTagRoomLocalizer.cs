@@ -698,7 +698,12 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         var rotation = rotationReference.rotation;
         if (lastRotationTime >= 0f && now > lastRotationTime)
         {
-            var speed = Quaternion.Angle(lastRotation, rotation) / (now - lastRotationTime);
+            // Not Quaternion.Angle: it returns 0 below ~0.16 deg, i.e. under ~10 deg/s
+            // at 60 fps. The rotation between frames, accurate for tiny angles:
+            var delta = Quaternion.Inverse(lastRotation) * rotation;
+            var vector = new Vector3(delta.x, delta.y, delta.z).magnitude;
+            var angle = 2f * Mathf.Atan2(vector, Mathf.Abs(delta.w)) * Mathf.Rad2Deg;
+            var speed = angle / (now - lastRotationTime);
             rotationSpeed = Mathf.Lerp(rotationSpeed, speed, 0.5f);
         }
         lastRotation = rotation;
