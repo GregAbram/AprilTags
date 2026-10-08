@@ -160,6 +160,9 @@ public class AprilTagRoomLocalizer : MonoBehaviour
     private float principalPointCy;
     private float focalLengthFx;
     private float focalLengthFy;
+    private PinholeIntrinsics startupIntrinsics;
+    private PinholeIntrinsics pendingIntrinsics;
+    private float lastLoggedFx;
     private readonly Dictionary<int, (Vector3 position, Quaternion rotation, float sizeMeters, bool measured)> tagRegistry = new();
     private bool learnUnlistedTags;
     private float defaultTagSizeMeters;
@@ -282,6 +285,8 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         focalLengthFy = intrinsics.Fy;
         principalPointCx = intrinsics.Cx;
         principalPointCy = intrinsics.Cy;
+        startupIntrinsics = intrinsics;
+        lastLoggedFx = intrinsics.Fx;
 
         Debug.Log($"[AprilTagRoomLocalizer] Camera intrinsics {intrinsics}");
         timing.Reset(Time.realtimeSinceStartup);
@@ -425,9 +430,18 @@ public class AprilTagRoomLocalizer : MonoBehaviour
 
         pendingFrame = frame;
         pendingPrepareMs = cameraSource.LastFramePrepareMilliseconds;
+        // The frame's own intrinsics when the source has them (autofocus moves
+        // the focal length several percent on iPhone); else the startup ones.
+        pendingIntrinsics = frame.HasIntrinsics ? frame.Intrinsics : startupIntrinsics;
+        if (Mathf.Abs(pendingIntrinsics.Fx - lastLoggedFx) > 0.005f * lastLoggedFx)
+        {
+            Debug.Log($"[AprilTagRoomLocalizer] Camera focal length changed: fx {lastLoggedFx:F1} -> {pendingIntrinsics.Fx:F1} ({(pendingIntrinsics.Fx / lastLoggedFx - 1f) * 100f:+0.0;-0.0}%)");
+            lastLoggedFx = pendingIntrinsics.Fx;
+        }
         var image = frame.Image;
+        var intrinsics = pendingIntrinsics;
         var delivered = Stopwatch.GetTimestamp();
-        pendingDetection = Task.Run(() => Detect(image, delivered));
+        pendingDetection = Task.Run(() => Detect(image, intrinsics, delivered));
     }
 
     private readonly struct CameraTagSample
@@ -459,7 +473,7 @@ public class AprilTagRoomLocalizer : MonoBehaviour
     // Worker thread: detect, then estimate each known tag's pose relative to the
     // camera. Uses only the detector (never called concurrently) and read-only
     // state set up before detection started.
-    private DetectionResult Detect(ImageU8 image, long deliveredTimestamp)
+    private DetectionResult Detect(ImageU8 image, PinholeIntrinsics intrinsics, long deliveredTimestamp)
     {
         var result = new DetectionResult { DeliveredTimestamp = deliveredTimestamp };
         var start = Stopwatch.GetTimestamp();
@@ -482,10 +496,10 @@ public class AprilTagRoomLocalizer : MonoBehaviour
             // Only trust detections within the angular range we've actually
             // validated with ground-truth testing - accuracy degrades at steeper
             // off-axis angles. Users should look directly at the tag to acquire.
-            var pixelOffsetX = (float)det.Center.x - principalPointCx;
-            var pixelOffsetY = (float)det.Center.y - principalPointCy;
-            var angleXDegrees = Mathf.Atan2(pixelOffsetX, focalLengthFx) * Mathf.Rad2Deg;
-            var angleYDegrees = Mathf.Atan2(pixelOffsetY, focalLengthFy) * Mathf.Rad2Deg;
+            var pixelOffsetX = (float)det.Center.x - intrinsics.Cx;
+            var pixelOffsetY = (float)det.Center.y - intrinsics.Cy;
+            var angleXDegrees = Mathf.Atan2(pixelOffsetX, intrinsics.Fx) * Mathf.Rad2Deg;
+            var angleYDegrees = Mathf.Atan2(pixelOffsetY, intrinsics.Fy) * Mathf.Rad2Deg;
             if (Mathf.Abs(angleXDegrees) > maxOffAxisAngleDegrees || Mathf.Abs(angleYDegrees) > maxOffAxisAngleDegrees)
             {
                 continue;
@@ -493,8 +507,8 @@ public class AprilTagRoomLocalizer : MonoBehaviour
 
             var info = new DetectionInfo(
                 ref det, sizeMeters,
-                focalLengthFx, focalLengthFy,
-                principalPointCx, principalPointCy);
+                intrinsics.Fx, intrinsics.Fy,
+                intrinsics.Cx, intrinsics.Cy);
 
             using var pose = new AprilTag.Interop.Pose(ref info);
 

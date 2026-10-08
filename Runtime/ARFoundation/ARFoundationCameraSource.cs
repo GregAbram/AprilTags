@@ -24,6 +24,11 @@ public class ARFoundationCameraSource : AprilTagCameraSource
     // detected on a new device, try toggling this first (a mirrored code never decodes).
     [SerializeField] private bool flipVertical = false;
 
+    // Autofocus changes the focal length (several percent on iPhone), which
+    // biases distances and tag orientations; a fixed focus keeps it constant.
+    // Frames carry their own intrinsics either way.
+    [SerializeField] private bool disableAutoFocus = true;
+
     private ImageU8 image;
     private double lastFrameTimestamp = double.NaN;
 
@@ -45,13 +50,19 @@ public class ARFoundationCameraSource : AprilTagCameraSource
         if (cameraManager == null)
         {
             Debug.LogError("[ARFoundationCameraSource] No ARCameraManager assigned or found in the scene - no frames will be delivered");
+            return;
+        }
+        if (disableAutoFocus)
+        {
+            cameraManager.autoFocusRequested = false;
+            Debug.Log("[ARFoundationCameraSource] Autofocus off (fixed focal length)");
         }
     }
 
     public override bool TryGetIntrinsics(out PinholeIntrinsics intrinsics)
     {
         intrinsics = default;
-        if (!IsPlaying || !cameraManager.TryGetIntrinsics(out var cameraIntrinsics))
+        if (!IsPlaying || !cameraManager.TryGetIntrinsics(out _))
         {
             return false;
         }
@@ -72,6 +83,18 @@ public class ARFoundationCameraSource : AprilTagCameraSource
             image?.Dispose();
             image = ImageU8.Create(width, height);
             Debug.Log($"[ARFoundationCameraSource] CPU image {width}x{height}, intrinsics reported for {cameraIntrinsics.resolution}, screen {Screen.orientation}, flipVertical={flipVertical}");
+        }
+
+        return TryGetCurrentIntrinsics(width, height, out intrinsics);
+    }
+
+    // ARKit's intrinsics for the latest frame, in the CPU image's pixel space.
+    private bool TryGetCurrentIntrinsics(int width, int height, out PinholeIntrinsics intrinsics)
+    {
+        intrinsics = default;
+        if (!cameraManager.TryGetIntrinsics(out var cameraIntrinsics))
+        {
+            return false;
         }
 
         // Intrinsics are reported for the camera's full resolution; the CPU image
@@ -119,7 +142,10 @@ public class ARFoundationCameraSource : AprilTagCameraSource
 
         CopyLuminance(cpuImage.GetPlane(0), image, flipVertical);
         LastFramePrepareMilliseconds = (Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency;
-        onComplete(true, new CameraFrame(image, cameraTransform.position, cameraRotation));
+        var frame = TryGetCurrentIntrinsics(image.Width, image.Height, out var intrinsics)
+            ? new CameraFrame(image, cameraTransform.position, cameraRotation, intrinsics)
+            : new CameraFrame(image, cameraTransform.position, cameraRotation);
+        onComplete(true, frame);
         return true;
     }
 

@@ -12,11 +12,27 @@ public readonly struct CameraFrame
     public readonly Vector3 CameraPosition;
     public readonly Quaternion CameraRotation;
 
+    // This frame's own intrinsics, for cameras whose focal length changes
+    // (autofocus); otherwise the localizer uses TryGetIntrinsics from startup.
+    public readonly PinholeIntrinsics Intrinsics;
+    public readonly bool HasIntrinsics;
+
     public CameraFrame(ImageU8 image, Vector3 cameraPosition, Quaternion cameraRotation)
     {
         Image = image;
         CameraPosition = cameraPosition;
         CameraRotation = cameraRotation;
+        Intrinsics = default;
+        HasIntrinsics = false;
+    }
+
+    public CameraFrame(ImageU8 image, Vector3 cameraPosition, Quaternion cameraRotation, PinholeIntrinsics intrinsics)
+    {
+        Image = image;
+        CameraPosition = cameraPosition;
+        CameraRotation = cameraRotation;
+        Intrinsics = intrinsics;
+        HasIntrinsics = true;
     }
 }
 
