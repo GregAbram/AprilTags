@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Threading.Tasks;
 using AprilTag.Interop;
 using Unity.Mathematics;
 using UnityEngine;
@@ -38,10 +39,43 @@ public readonly struct RoomOriginEstimate
     public Vector3 RoomToWorld(Vector3 roomPosition) => Position + Rotation * roomPosition;
 }
 
+// One configured tag seen in one camera frame, in this session's world space.
+// OriginPosition/OriginRotation are the room origin as solved from this tag
+// alone (yaw-only); its yaw is noisy beyond ~1 m, so prefer fitting several
+// tags' WorldPositions (RoomFit) when more than one has been seen.
+public readonly struct TagObservation
+{
+    public readonly int TagId;
+    public readonly float Time;
+    public readonly float Distance;
+    public readonly Vector3 TagRoomPosition;
+    public readonly Vector3 WorldPosition;
+    public readonly Vector3 OriginPosition;
+    public readonly Quaternion OriginRotation;
+
+    public TagObservation(int tagId, float time, float distance, Vector3 tagRoomPosition,
+        Vector3 worldPosition, Vector3 originPosition, Quaternion originRotation)
+    {
+        TagId = tagId;
+        Time = time;
+        Distance = distance;
+        TagRoomPosition = tagRoomPosition;
+        WorldPosition = worldPosition;
+        OriginPosition = originPosition;
+        OriginRotation = originRotation;
+    }
+}
+
 // Detects the tags listed in the room config and solves for the room origin's
-// pose in this session. Each BeginAcquisition() produces one estimate - from
-// whichever known tag first stays in view for a full acquisition window - and
-// raises EstimateAcquired; detection is idle between acquisitions. Frames come
+// pose in this session. Detection runs on a worker thread; the main thread only
+// requests frames and applies results. Two ways to use it:
+//   - Acquisition: each BeginAcquisition() produces one estimate - from
+//     whichever known tag first stays in view for a full acquisition window -
+//     and raises EstimateAcquired.
+//   - Continuous scan (ContinuousScan): a frame every ScanIntervalSeconds, and
+//     every known tag in it is reported as a single-frame TagObserved; RoomAnchor
+//     builds the room from these.
+// TagObserved is raised for every processed frame in either mode. Frames come
 // from an AprilTagCameraSource: the assigned one, else one on this GameObject,
 // else the first in the scene.
 public class AprilTagRoomLocalizer : MonoBehaviour
@@ -54,16 +88,34 @@ public class AprilTagRoomLocalizer : MonoBehaviour
     [SerializeField] private float maxSampleGapSeconds = 0.25f;
     [SerializeField] private float maxOffAxisAngleDegrees = 20f;
 
-    [Tooltip("While acquiring, log per-frame timing (image prepare, detection, processing, latency) this often; also logged when an acquisition ends.")]
+    [Tooltip("Scan for tags continuously at ScanIntervalSeconds, reporting each sighting via TagObserved.")]
+    [SerializeField] private bool continuousScan;
+    [Tooltip("Seconds between continuous-scan frames (0 = every camera frame).")]
+    [SerializeField] private float scanIntervalSeconds = 0.5f;
+
+    [Tooltip("Log per-frame timing (image prepare, detection, pose, apply, latency) this often while scanning or acquiring; also when an acquisition ends.")]
     [SerializeField] private float timingLogIntervalSeconds = 5f;
 
     public event Action<RoomOriginEstimate> EstimateAcquired;
+    public event Action<TagObservation> TagObserved;
 
     // True from BeginAcquisition() until an estimate is raised or cancelled,
     // including while still starting up (config load, camera, settle delay).
     public bool IsAcquiring => armed;
     public bool IsReady => detector != null;
     public IReadOnlyCollection<int> KnownTagIds => tagRegistry.Keys;
+
+    public bool ContinuousScan
+    {
+        get => continuousScan;
+        set => continuousScan = value;
+    }
+
+    public float ScanIntervalSeconds
+    {
+        get => scanIntervalSeconds;
+        set => scanIntervalSeconds = Mathf.Max(0f, value);
+    }
 
     private bool armed;
     private float armedTime;
@@ -86,16 +138,25 @@ public class AprilTagRoomLocalizer : MonoBehaviour
 
     private Detector detector;
     private Family family;
-    private bool frameInFlight;
-    private long frameRequestTimestamp;
-    private readonly FrameTiming timing = new();
-    private float lastTimingLogTime;
     private Action<bool, CameraFrame> onFrameCaptured;
     private float principalPointCx;
     private float principalPointCy;
     private float focalLengthFx;
     private float focalLengthFy;
     private readonly Dictionary<int, (Vector3 position, Quaternion rotation, float sizeMeters)> tagRegistry = new();
+
+    // One frame in flight at a time: requested, then detected on a worker, then
+    // applied here. The source doesn't rewrite its image until the next request.
+    private bool frameInFlight;
+    private long frameRequestTimestamp;
+    private float frameRequestTime;
+    private float nextScanTime;
+    private Task<DetectionResult> pendingDetection;
+    private CameraFrame pendingFrame;
+    private double pendingPrepareMs;
+
+    private readonly FrameTiming timing = new();
+    private float lastTimingLogTime;
 
     // For components that add the localizer at runtime; call before its Start().
     public void Configure(AprilTagCameraSource camera, int decimate, string configFile,
@@ -117,8 +178,6 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         armed = true;
         armedTime = Time.time;
         acquiring = false;
-        timing.Reset(Time.realtimeSinceStartup);
-        lastTimingLogTime = Time.time;
     }
 
     public void CancelAcquisition()
@@ -183,6 +242,8 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         principalPointCy = intrinsics.Cy;
 
         Debug.Log($"[AprilTagRoomLocalizer] Camera intrinsics {intrinsics}");
+        timing.Reset(Time.realtimeSinceStartup);
+        lastTimingLogTime = Time.time;
     }
 
     private System.Collections.IEnumerator LoadRoomConfig()
@@ -262,65 +323,95 @@ public class AprilTagRoomLocalizer : MonoBehaviour
 
     private void Update()
     {
+        if (pendingDetection != null && pendingDetection.IsCompleted)
+        {
+            ApplyDetection();
+        }
+
         // The camera pauses with the app (e.g. headset taken off); querying it
         // then logs an error every frame.
-        if (detector == null || frameInFlight || !armed || !cameraSource.IsPlaying)
+        if (detector == null || frameInFlight || !cameraSource.IsPlaying)
         {
             return;
         }
 
-        if (Time.time - lastTimingLogTime >= timingLogIntervalSeconds)
+        var wanted = armed || (continuousScan && Time.time >= nextScanTime);
+        if (!wanted)
         {
-            LogTiming("acquiring");
-            lastTimingLogTime = Time.time;
+            return;
+        }
+
+        if (timing.Frames > 0 && Time.time - lastTimingLogTime >= timingLogIntervalSeconds)
+        {
+            LogTiming(armed ? "acquiring" : "scanning");
         }
 
         // Set before requesting: a source may deliver the frame synchronously.
         frameInFlight = true;
         frameRequestTimestamp = Stopwatch.GetTimestamp();
+        frameRequestTime = Time.time;
+        nextScanTime = Time.time + scanIntervalSeconds;
         if (!cameraSource.TryRequestFrame(onFrameCaptured))
         {
             frameInFlight = false;
         }
     }
 
+    // Main thread, when the source has the frame: hand it to a worker.
     private void OnFrameCaptured(bool succeeded, CameraFrame frame)
     {
-        frameInFlight = false;
-
-        if (!armed || !succeeded || detector == null)
+        if (!succeeded || detector == null)
         {
+            frameInFlight = false;
             return;
         }
 
-        var start = Stopwatch.GetTimestamp();
-        var latencyMs = Milliseconds(frameRequestTimestamp, start);
-        using var detections = detector.Detect(frame.Image);
-        var detectMs = Milliseconds(start, Stopwatch.GetTimestamp());
-        try
+        pendingFrame = frame;
+        pendingPrepareMs = cameraSource.LastFramePrepareMilliseconds;
+        var image = frame.Image;
+        var delivered = Stopwatch.GetTimestamp();
+        pendingDetection = Task.Run(() => Detect(image, delivered));
+    }
+
+    private readonly struct CameraTagSample
+    {
+        public readonly int TagId;
+        public readonly Vector2 PixelCenter;
+        public readonly Vector3 PositionCameraLocal;
+        public readonly Quaternion RotationCameraLocal;
+
+        public CameraTagSample(int tagId, Vector2 pixelCenter, Vector3 positionCameraLocal, Quaternion rotationCameraLocal)
         {
-            ProcessDetections(detections, frame);
-        }
-        finally
-        {
-            var end = Stopwatch.GetTimestamp();
-            timing.Add(cameraSource.LastFramePrepareMilliseconds, detectMs, Milliseconds(start, end) - detectMs, latencyMs);
+            TagId = tagId;
+            PixelCenter = pixelCenter;
+            PositionCameraLocal = positionCameraLocal;
+            RotationCameraLocal = rotationCameraLocal;
         }
     }
 
-    private void ProcessDetections(DetectionArray detections, CameraFrame frame)
+    private sealed class DetectionResult
     {
+        public readonly List<CameraTagSample> Samples = new();
+        public long DeliveredTimestamp;
+        public double DetectMs;
+        public double PoseMs;
+    }
+
+    // Worker thread: detect, then estimate each known tag's pose relative to the
+    // camera. Uses only the detector (never called concurrently) and read-only
+    // state set up before detection started.
+    private DetectionResult Detect(ImageU8 image, long deliveredTimestamp)
+    {
+        var result = new DetectionResult { DeliveredTimestamp = deliveredTimestamp };
+        var start = Stopwatch.GetTimestamp();
+        using var detections = detector.Detect(image);
+        var detected = Stopwatch.GetTimestamp();
+        result.DetectMs = Milliseconds(start, detected);
+
         for (var i = 0; i < detections.Length; i++)
         {
             ref var det = ref detections[i];
-            if (!tagRegistry.TryGetValue(det.ID, out var knownRoomPose))
-            {
-                continue;
-            }
-
-            // A window only averages samples of the tag that started it, so a
-            // second tag in view can't blend its own systematic error in.
-            if (acquiring && det.ID != acquiringTagId && Time.time - lastSampleTime <= maxSampleGapSeconds)
+            if (!tagRegistry.TryGetValue(det.ID, out var known))
             {
                 continue;
             }
@@ -338,7 +429,7 @@ public class AprilTagRoomLocalizer : MonoBehaviour
             }
 
             var info = new DetectionInfo(
-                ref det, knownRoomPose.sizeMeters,
+                ref det, known.sizeMeters,
                 focalLengthFx, focalLengthFy,
                 principalPointCx, principalPointCy);
 
@@ -356,11 +447,37 @@ public class AprilTagRoomLocalizer : MonoBehaviour
             var rawQuat = math.quaternion(rawRot);
             var flippedQuat = rawQuat.value * math.float4(-1, 1, -1, 1);
 
-            var tagPositionCameraLocal = new Vector3(tagPosition.x, tagPosition.y, tagPosition.z);
-            var tagRotationCameraLocal = new Quaternion(flippedQuat.x, flippedQuat.y, flippedQuat.z, flippedQuat.w);
+            result.Samples.Add(new CameraTagSample(det.ID,
+                new Vector2((float)det.Center.x, (float)det.Center.y),
+                new Vector3(tagPosition.x, tagPosition.y, tagPosition.z),
+                new Quaternion(flippedQuat.x, flippedQuat.y, flippedQuat.z, flippedQuat.w)));
+        }
+        result.PoseMs = Milliseconds(detected, Stopwatch.GetTimestamp());
+        return result;
+    }
 
-            var sessionTagPosition = frame.CameraPosition + frame.CameraRotation * tagPositionCameraLocal;
-            var sessionTagRotation = frame.CameraRotation * tagRotationCameraLocal;
+    // Main thread: turn the worker's camera-relative samples into world-space
+    // observations, report them, and feed any acquisition in progress.
+    private void ApplyDetection()
+    {
+        var task = pendingDetection;
+        pendingDetection = null;
+        frameInFlight = false;
+
+        if (task.IsFaulted)
+        {
+            Debug.LogError($"[AprilTagRoomLocalizer] Detection failed: {task.Exception?.GetBaseException()}");
+            return;
+        }
+
+        var start = Stopwatch.GetTimestamp();
+        var result = task.Result;
+        var frame = pendingFrame;
+        foreach (var sample in result.Samples)
+        {
+            var known = tagRegistry[sample.TagId];
+            var sessionTagPosition = frame.CameraPosition + frame.CameraRotation * sample.PositionCameraLocal;
+            var sessionTagRotation = frame.CameraRotation * sample.RotationCameraLocal;
 
             // Solve for the room origin's pose in this session's world space, given
             // this tag's known fixed pose in room coordinates and its just-detected
@@ -369,76 +486,100 @@ public class AprilTagRoomLocalizer : MonoBehaviour
             // true "up" (gravity), so the room origin's rotation relative to this
             // session should be yaw-only - any pitch/roll here is just noise from
             // the angle the tag happened to be viewed at, and must be discarded.
-            var rawRelativeRotation = sessionTagRotation * Quaternion.Inverse(knownRoomPose.rotation);
+            var rawRelativeRotation = sessionTagRotation * Quaternion.Inverse(known.rotation);
             var flatForward = Vector3.ProjectOnPlane(rawRelativeRotation * Vector3.forward, Vector3.up);
-            var sampleRoomOriginRotation = Quaternion.LookRotation(flatForward, Vector3.up);
-            var sampleRoomOriginPosition = sessionTagPosition - sampleRoomOriginRotation * knownRoomPose.position;
+            var originRotation = Quaternion.LookRotation(flatForward, Vector3.up);
+            var originPosition = sessionTagPosition - originRotation * known.position;
 
-            // Accumulate samples over a short window rather than trusting the very
-            // first detection - smooths out both single-frame noise and any
-            // transient tracking disturbance from recent head movement. The window
-            // must be a continuous run of sightings: if the tag drops out for longer
-            // than maxSampleGapSeconds, start over rather than averaging a sample
-            // from long ago with one from now.
-            if (acquiring && Time.time - lastSampleTime > maxSampleGapSeconds)
-            {
-                Debug.Log($"[AprilTagRoomLocalizer] Lost tag {acquiringTagId} for {Time.time - lastSampleTime:F2}s after {sampleCount} sample(s); restarting acquisition");
-                acquiring = false;
-            }
+            TagObserved?.Invoke(new TagObservation(sample.TagId, frameRequestTime, sample.PositionCameraLocal.magnitude,
+                known.position, sessionTagPosition, originPosition, originRotation));
 
-            if (!acquiring)
-            {
-                acquiring = true;
-                acquiringTagId = det.ID;
-                firstSampleTime = Time.time;
-                positionSum = Vector3.zero;
-                forwardSum = Vector3.zero;
-                pixelCenterSum = Vector2.zero;
-                cameraLocalPositionSum = Vector3.zero;
-                tagWorldPositionSum = Vector3.zero;
-                sampleCount = 0;
-                sampleTagPositions.Clear();
-                sampleOriginPositions.Clear();
-                sampleYaws.Clear();
-            }
-
-            positionSum += sampleRoomOriginPosition;
-            forwardSum += sampleRoomOriginRotation * Vector3.forward;
-            pixelCenterSum += new Vector2((float)det.Center.x, (float)det.Center.y);
-            cameraLocalPositionSum += tagPositionCameraLocal;
-            tagWorldPositionSum += sessionTagPosition;
-            sampleCount++;
-            sampleTagPositions.Add(sessionTagPosition);
-            sampleOriginPositions.Add(sampleRoomOriginPosition);
-            sampleYaws.Add(sampleRoomOriginRotation.eulerAngles.y);
-            lastSampleTime = Time.time;
-
-            if (Time.time - firstSampleTime < acquisitionWindowSeconds)
+            if (armed && AddAcquisitionSample(sample, known.position, sessionTagPosition, originPosition, originRotation))
             {
                 break;
             }
-
-            var estimate = new RoomOriginEstimate(
-                det.ID,
-                positionSum / sampleCount,
-                Quaternion.LookRotation(forwardSum.normalized, Vector3.up),
-                sampleCount,
-                cameraLocalPositionSum / sampleCount,
-                tagWorldPositionSum / sampleCount,
-                knownRoomPose.position);
-            var avgPixelCenter = pixelCenterSum / sampleCount;
-
-            armed = false;
-            acquiring = false;
-
-            Debug.Log($"[AprilTagRoomLocalizer] Locked using tag {det.ID} {Time.time - armedTime:F1}s after acquisition began, averaged {sampleCount} samples over {Time.time - firstSampleTime:F1}s; avg tag pixel center=({avgPixelCenter.x:F1},{avgPixelCenter.y:F1}) principalPoint=({principalPointCx:F1},{principalPointCy:F1}); avg tagPositionCameraLocal={estimate.TagPositionCameraLocal}; room origin at world pos={estimate.Position} rot={estimate.Rotation.eulerAngles}");
-
-            Debug.Log($"[AprilTagRoomLocalizer] Per-frame spread over {sampleCount} samples (tag {det.ID}, {estimate.TagPositionCameraLocal.magnitude:F2} m): " +
-                      $"tag position {PositionSpread(sampleTagPositions)}; room origin {PositionSpread(sampleOriginPositions)}; yaw {YawSpread(sampleYaws, estimate.Rotation.eulerAngles.y)}");
-            LogTiming("locked");
-            EstimateAcquired?.Invoke(estimate);
-            break;
         }
+
+        var end = Stopwatch.GetTimestamp();
+        timing.Add(pendingPrepareMs, result.DetectMs, result.PoseMs, Milliseconds(start, end),
+            Milliseconds(frameRequestTimestamp, result.DeliveredTimestamp), Milliseconds(frameRequestTimestamp, end));
+    }
+
+    // Accumulates one sample into the acquisition window; true if it completed
+    // the window and an estimate was raised.
+    private bool AddAcquisitionSample(CameraTagSample sample, Vector3 tagRoomPosition, Vector3 sessionTagPosition,
+        Vector3 sampleRoomOriginPosition, Quaternion sampleRoomOriginRotation)
+    {
+        // A window only averages samples of the tag that started it, so a
+        // second tag in view can't blend its own systematic error in.
+        if (acquiring && sample.TagId != acquiringTagId && Time.time - lastSampleTime <= maxSampleGapSeconds)
+        {
+            return false;
+        }
+
+        // Accumulate samples over a short window rather than trusting the very
+        // first detection - smooths out both single-frame noise and any
+        // transient tracking disturbance from recent head movement. The window
+        // must be a continuous run of sightings: if the tag drops out for longer
+        // than maxSampleGapSeconds, start over rather than averaging a sample
+        // from long ago with one from now.
+        if (acquiring && Time.time - lastSampleTime > maxSampleGapSeconds)
+        {
+            Debug.Log($"[AprilTagRoomLocalizer] Lost tag {acquiringTagId} for {Time.time - lastSampleTime:F2}s after {sampleCount} sample(s); restarting acquisition");
+            acquiring = false;
+        }
+
+        if (!acquiring)
+        {
+            acquiring = true;
+            acquiringTagId = sample.TagId;
+            firstSampleTime = Time.time;
+            positionSum = Vector3.zero;
+            forwardSum = Vector3.zero;
+            pixelCenterSum = Vector2.zero;
+            cameraLocalPositionSum = Vector3.zero;
+            tagWorldPositionSum = Vector3.zero;
+            sampleCount = 0;
+            sampleTagPositions.Clear();
+            sampleOriginPositions.Clear();
+            sampleYaws.Clear();
+        }
+
+        positionSum += sampleRoomOriginPosition;
+        forwardSum += sampleRoomOriginRotation * Vector3.forward;
+        pixelCenterSum += sample.PixelCenter;
+        cameraLocalPositionSum += sample.PositionCameraLocal;
+        tagWorldPositionSum += sessionTagPosition;
+        sampleCount++;
+        sampleTagPositions.Add(sessionTagPosition);
+        sampleOriginPositions.Add(sampleRoomOriginPosition);
+        sampleYaws.Add(sampleRoomOriginRotation.eulerAngles.y);
+        lastSampleTime = Time.time;
+
+        if (Time.time - firstSampleTime < acquisitionWindowSeconds)
+        {
+            return false;
+        }
+
+        var estimate = new RoomOriginEstimate(
+            sample.TagId,
+            positionSum / sampleCount,
+            Quaternion.LookRotation(forwardSum.normalized, Vector3.up),
+            sampleCount,
+            cameraLocalPositionSum / sampleCount,
+            tagWorldPositionSum / sampleCount,
+            tagRoomPosition);
+        var avgPixelCenter = pixelCenterSum / sampleCount;
+
+        armed = false;
+        acquiring = false;
+
+        Debug.Log($"[AprilTagRoomLocalizer] Locked using tag {sample.TagId} {Time.time - armedTime:F1}s after acquisition began, averaged {sampleCount} samples over {Time.time - firstSampleTime:F1}s; avg tag pixel center=({avgPixelCenter.x:F1},{avgPixelCenter.y:F1}) principalPoint=({principalPointCx:F1},{principalPointCy:F1}); avg tagPositionCameraLocal={estimate.TagPositionCameraLocal}; room origin at world pos={estimate.Position} rot={estimate.Rotation.eulerAngles}");
+        Debug.Log($"[AprilTagRoomLocalizer] Per-frame spread over {sampleCount} samples (tag {sample.TagId}, {estimate.TagPositionCameraLocal.magnitude:F2} m): " +
+                  $"tag position {PositionSpread(sampleTagPositions)}; room origin {PositionSpread(sampleOriginPositions)}; yaw {YawSpread(sampleYaws, estimate.Rotation.eulerAngles.y)}");
+        LogTiming("locked");
+        EstimateAcquired?.Invoke(estimate);
+        return true;
     }
 
     // Standard deviation per axis and of the 3D distance from the mean, plus the
@@ -482,15 +623,18 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         {
             Debug.Log($"[AprilTagRoomLocalizer] Timing ({reason}): {timing.Summary(Time.realtimeSinceStartup)}");
         }
+        timing.Reset(Time.realtimeSinceStartup);
+        lastTimingLogTime = Time.time;
     }
 
-    // Per-frame cost while acquiring. prepare, detect and process run on the
-    // main thread; latency is from requesting a frame to receiving it (includes
-    // any async GPU readback).
+    // Per-frame cost. prepare (image copy/convert) and apply run on the main
+    // thread; detect and pose on a worker. latency is from requesting a frame to
+    // receiving it (includes any async GPU readback); total is request to applied.
     private sealed class FrameTiming
     {
         private float startTime;
-        private double prepareSum, prepareMax, detectSum, detectMax, processSum, processMax, latencySum, latencyMax;
+        private double prepareSum, prepareMax, detectSum, detectMax, poseSum, poseMax, applySum, applyMax;
+        private double latencySum, latencyMax, totalSum, totalMax;
 
         public int Frames { get; private set; }
 
@@ -498,31 +642,41 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         {
             startTime = now;
             Frames = 0;
-            prepareSum = prepareMax = detectSum = detectMax = processSum = processMax = latencySum = latencyMax = 0;
+            prepareSum = prepareMax = detectSum = detectMax = poseSum = poseMax = applySum = applyMax = 0;
+            latencySum = latencyMax = totalSum = totalMax = 0;
         }
 
-        public void Add(double prepareMs, double detectMs, double processMs, double latencyMs)
+        public void Add(double prepareMs, double detectMs, double poseMs, double applyMs, double latencyMs, double totalMs)
         {
             Frames++;
             prepareSum += prepareMs; prepareMax = Math.Max(prepareMax, prepareMs);
             detectSum += detectMs; detectMax = Math.Max(detectMax, detectMs);
-            processSum += processMs; processMax = Math.Max(processMax, processMs);
+            poseSum += poseMs; poseMax = Math.Max(poseMax, poseMs);
+            applySum += applyMs; applyMax = Math.Max(applyMax, applyMs);
             latencySum += latencyMs; latencyMax = Math.Max(latencyMax, latencyMs);
+            totalSum += totalMs; totalMax = Math.Max(totalMax, totalMs);
         }
 
         public string Summary(float now)
         {
             var seconds = Math.Max(now - startTime, 1e-3f);
-            var mainThread = (prepareSum + detectSum + processSum) / Frames;
             return $"{Frames} frames in {seconds:F1}s ({Frames / seconds:F1}/s); ms mean/max: " +
-                   $"prepare {prepareSum / Frames:F1}/{prepareMax:F1}, detect {detectSum / Frames:F1}/{detectMax:F1}, " +
-                   $"process {processSum / Frames:F2}/{processMax:F2}, main thread total {mainThread:F1}; " +
-                   $"latency {latencySum / Frames:F1}/{latencyMax:F1}";
+                   $"main thread: prepare {prepareSum / Frames:F1}/{prepareMax:F1}, apply {applySum / Frames:F2}/{applyMax:F2}; " +
+                   $"worker: detect {detectSum / Frames:F1}/{detectMax:F1}, pose {poseSum / Frames:F2}/{poseMax:F2}; " +
+                   $"latency {latencySum / Frames:F1}/{latencyMax:F1}, request to applied {totalSum / Frames:F1}/{totalMax:F1}";
         }
     }
 
     private void OnDestroy()
     {
+        // Let an in-flight detection finish before the detector goes away.
+        try
+        {
+            pendingDetection?.Wait(500);
+        }
+        catch (AggregateException)
+        {
+        }
         if (detector != null && family != null)
         {
             detector.RemoveFamily(family);

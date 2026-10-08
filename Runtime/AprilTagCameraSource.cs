@@ -6,8 +6,8 @@ using UnityEngine;
 // at the moment the frame was captured (not when it finished processing).
 public readonly struct CameraFrame
 {
-    // Row 0 is the top of the image. Owned by the source; valid only during the
-    // callback that delivers it.
+    // Row 0 is the top of the image. Owned by the source; valid until the next
+    // TryRequestFrame (the localizer detects on a worker thread meanwhile).
     public readonly ImageU8 Image;
     public readonly Vector3 CameraPosition;
     public readonly Quaternion CameraRotation;
