@@ -35,4 +35,8 @@ public abstract class AprilTagCameraSource : MonoBehaviour
     // Otherwise onComplete is called exactly once - possibly before this returns -
     // with true and the frame, or with false if the capture failed.
     public abstract bool TryRequestFrame(Action<bool, CameraFrame> onComplete);
+
+    // Main-thread time (ms) this source spent turning the last delivered frame
+    // into the grayscale image (copy, conversion); for the localizer's timing log.
+    public double LastFramePrepareMilliseconds { get; protected set; }
 }

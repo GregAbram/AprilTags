@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using AprilTag.Interop;
 using Unity.Mathematics;
 using UnityEngine;
 using UnityEngine.Networking;
+using Debug = UnityEngine.Debug;
 
 // The room origin's pose in this session's world space, as solved from one tag.
 public readonly struct RoomOriginEstimate
@@ -52,6 +54,9 @@ public class AprilTagRoomLocalizer : MonoBehaviour
     [SerializeField] private float maxSampleGapSeconds = 0.25f;
     [SerializeField] private float maxOffAxisAngleDegrees = 20f;
 
+    [Tooltip("While acquiring, log per-frame timing (image prepare, detection, processing, latency) this often; also logged when an acquisition ends.")]
+    [SerializeField] private float timingLogIntervalSeconds = 5f;
+
     public event Action<RoomOriginEstimate> EstimateAcquired;
 
     // True from BeginAcquisition() until an estimate is raised or cancelled,
@@ -76,6 +81,9 @@ public class AprilTagRoomLocalizer : MonoBehaviour
     private Detector detector;
     private Family family;
     private bool frameInFlight;
+    private long frameRequestTimestamp;
+    private readonly FrameTiming timing = new();
+    private float lastTimingLogTime;
     private Action<bool, CameraFrame> onFrameCaptured;
     private float principalPointCx;
     private float principalPointCy;
@@ -103,10 +111,16 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         armed = true;
         armedTime = Time.time;
         acquiring = false;
+        timing.Reset(Time.realtimeSinceStartup);
+        lastTimingLogTime = Time.time;
     }
 
     public void CancelAcquisition()
     {
+        if (armed)
+        {
+            LogTiming("cancelled");
+        }
         armed = false;
         acquiring = false;
     }
@@ -249,8 +263,15 @@ public class AprilTagRoomLocalizer : MonoBehaviour
             return;
         }
 
+        if (Time.time - lastTimingLogTime >= timingLogIntervalSeconds)
+        {
+            LogTiming("acquiring");
+            lastTimingLogTime = Time.time;
+        }
+
         // Set before requesting: a source may deliver the frame synchronously.
         frameInFlight = true;
+        frameRequestTimestamp = Stopwatch.GetTimestamp();
         if (!cameraSource.TryRequestFrame(onFrameCaptured))
         {
             frameInFlight = false;
@@ -266,7 +287,23 @@ public class AprilTagRoomLocalizer : MonoBehaviour
             return;
         }
 
+        var start = Stopwatch.GetTimestamp();
+        var latencyMs = Milliseconds(frameRequestTimestamp, start);
         using var detections = detector.Detect(frame.Image);
+        var detectMs = Milliseconds(start, Stopwatch.GetTimestamp());
+        try
+        {
+            ProcessDetections(detections, frame);
+        }
+        finally
+        {
+            var end = Stopwatch.GetTimestamp();
+            timing.Add(cameraSource.LastFramePrepareMilliseconds, detectMs, Milliseconds(start, end) - detectMs, latencyMs);
+        }
+    }
+
+    private void ProcessDetections(DetectionArray detections, CameraFrame frame)
+    {
         for (var i = 0; i < detections.Length; i++)
         {
             ref var det = ref detections[i];
@@ -384,8 +421,56 @@ public class AprilTagRoomLocalizer : MonoBehaviour
 
             Debug.Log($"[AprilTagRoomLocalizer] Locked using tag {det.ID} {Time.time - armedTime:F1}s after acquisition began, averaged {sampleCount} samples over {Time.time - firstSampleTime:F1}s; avg tag pixel center=({avgPixelCenter.x:F1},{avgPixelCenter.y:F1}) principalPoint=({principalPointCx:F1},{principalPointCy:F1}); avg tagPositionCameraLocal={estimate.TagPositionCameraLocal}; room origin at world pos={estimate.Position} rot={estimate.Rotation.eulerAngles}");
 
+            LogTiming("locked");
             EstimateAcquired?.Invoke(estimate);
             break;
+        }
+    }
+
+    private static double Milliseconds(long from, long to) => (to - from) * 1000.0 / Stopwatch.Frequency;
+
+    private void LogTiming(string reason)
+    {
+        if (timing.Frames > 0)
+        {
+            Debug.Log($"[AprilTagRoomLocalizer] Timing ({reason}): {timing.Summary(Time.realtimeSinceStartup)}");
+        }
+    }
+
+    // Per-frame cost while acquiring. prepare, detect and process run on the
+    // main thread; latency is from requesting a frame to receiving it (includes
+    // any async GPU readback).
+    private sealed class FrameTiming
+    {
+        private float startTime;
+        private double prepareSum, prepareMax, detectSum, detectMax, processSum, processMax, latencySum, latencyMax;
+
+        public int Frames { get; private set; }
+
+        public void Reset(float now)
+        {
+            startTime = now;
+            Frames = 0;
+            prepareSum = prepareMax = detectSum = detectMax = processSum = processMax = latencySum = latencyMax = 0;
+        }
+
+        public void Add(double prepareMs, double detectMs, double processMs, double latencyMs)
+        {
+            Frames++;
+            prepareSum += prepareMs; prepareMax = Math.Max(prepareMax, prepareMs);
+            detectSum += detectMs; detectMax = Math.Max(detectMax, detectMs);
+            processSum += processMs; processMax = Math.Max(processMax, processMs);
+            latencySum += latencyMs; latencyMax = Math.Max(latencyMax, latencyMs);
+        }
+
+        public string Summary(float now)
+        {
+            var seconds = Math.Max(now - startTime, 1e-3f);
+            var mainThread = (prepareSum + detectSum + processSum) / Frames;
+            return $"{Frames} frames in {seconds:F1}s ({Frames / seconds:F1}/s); ms mean/max: " +
+                   $"prepare {prepareSum / Frames:F1}/{prepareMax:F1}, detect {detectSum / Frames:F1}/{detectMax:F1}, " +
+                   $"process {processSum / Frames:F2}/{processMax:F2}, main thread total {mainThread:F1}; " +
+                   $"latency {latencySum / Frames:F1}/{latencyMax:F1}";
         }
     }
 

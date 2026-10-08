@@ -1,7 +1,9 @@
 using System;
+using System.Diagnostics;
 using AprilTag.Interop;
 using Meta.XR;
 using UnityEngine;
+using Debug = UnityEngine.Debug;
 using UnityEngine.Rendering;
 
 // Meta Quest camera source: reads PassthroughCameraAccess's texture back from
@@ -88,8 +90,10 @@ public class PassthroughCameraSource : AprilTagCameraSource
                 return;
             }
 
+            var start = Stopwatch.GetTimestamp();
             request.GetData<Color32>().CopyTo(pixelBuffer);
             ConvertToImageU8(pixelBuffer, image);
+            LastFramePrepareMilliseconds = (Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency;
             onComplete(true, new CameraFrame(image, cameraPose.position, cameraPose.rotation));
         });
         return true;

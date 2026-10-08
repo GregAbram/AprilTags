@@ -1,6 +1,8 @@
 using System;
+using System.Diagnostics;
 using AprilTag.Interop;
 using UnityEngine;
+using Debug = UnityEngine.Debug;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
 
@@ -95,6 +97,7 @@ public class ARFoundationCameraSource : AprilTagCameraSource
             return false;
         }
 
+        var start = Stopwatch.GetTimestamp();
         using var cpuImage = AcquireLatestCpuImage();
 
         // ARKit runs at 60 Hz, possibly slower than the app: don't detect the
@@ -115,6 +118,7 @@ public class ARFoundationCameraSource : AprilTagCameraSource
         var cameraRotation = cameraTransform.rotation * Quaternion.Euler(0f, 0f, RollDegreesFor(Screen.orientation));
 
         CopyLuminance(cpuImage.GetPlane(0), image, flipVertical);
+        LastFramePrepareMilliseconds = (Stopwatch.GetTimestamp() - start) * 1000.0 / Stopwatch.Frequency;
         onComplete(true, new CameraFrame(image, cameraTransform.position, cameraRotation));
         return true;
     }
