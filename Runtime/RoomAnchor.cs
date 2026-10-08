@@ -105,6 +105,8 @@ public class RoomAnchor : MonoBehaviour
         public float weightSum;
         public int samples;
         [NonSerialized] public int disagreements;
+        [NonSerialized] public float rotationSpeedSum;
+        [NonSerialized] public float rotationSpeedMax;
 
         public Vector3 Position => new(x, y, z);
     }
@@ -512,10 +514,12 @@ public class RoomAnchor : MonoBehaviour
         (tag.x, tag.y, tag.z) = (position.x, position.y, position.z);
         tag.weightSum += weight;
         tag.samples++;
+        tag.rotationSpeedSum += observation.RotationSpeed;
+        tag.rotationSpeedMax = Mathf.Max(tag.rotationSpeedMax, observation.RotationSpeed);
         learnedDirty = true;
         if (tag.samples == establishedSamples)
         {
-            Debug.Log($"[RoomAnchor] Learned tag {tag.id} at room ({position.x:F3}, {position.y:F3}, {position.z:F3})");
+            Debug.Log($"[RoomAnchor] Learned tag {tag.id} at room ({position.x:F3}, {position.y:F3}, {position.z:F3}); turning {tag.rotationSpeedSum / tag.samples:F1} deg/s mean, {tag.rotationSpeedMax:F1} max over those sightings");
         }
     }
 
@@ -574,7 +578,7 @@ public class RoomAnchor : MonoBehaviour
         if (closeSightings != lastLoggedCloseSightings && closeSightings > 0)
         {
             lastLoggedCloseSightings = closeSightings;
-            Debug.Log($"[RoomAnchor] Tag {latest.TagId} at {latest.Distance:F2} m: {Mathf.Min(closeSightings, anchorSamples)}/{anchorSamples} close sightings (within {anchorMaxDistance:F1} m) to anchor");
+            Debug.Log($"[RoomAnchor] Tag {latest.TagId} at {latest.Distance:F2} m, turning {latest.RotationSpeed:F1} deg/s: {Mathf.Min(closeSightings, anchorSamples)}/{anchorSamples} close sightings (within {anchorMaxDistance:F1} m) to anchor");
         }
         else if (latest.Distance > anchorMaxDistance && Time.time - lastDistanceLogTime > 3f)
         {

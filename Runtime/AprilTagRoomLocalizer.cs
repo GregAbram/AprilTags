@@ -54,19 +54,22 @@ public readonly struct TagObservation
     public readonly bool Listed;
     public readonly float Time;
     public readonly float Distance;
+    // How fast the camera was turning when the frame was taken (deg/s).
+    public readonly float RotationSpeed;
     public readonly Vector3 TagRoomPosition;
     public readonly Vector3 WorldPosition;
     public readonly Vector3 OriginPosition;
     public readonly Quaternion OriginRotation;
 
-    public TagObservation(int tagId, bool measured, bool listed, float time, float distance, Vector3 tagRoomPosition,
-        Vector3 worldPosition, Vector3 originPosition, Quaternion originRotation)
+    public TagObservation(int tagId, bool measured, bool listed, float time, float distance, float rotationSpeed,
+        Vector3 tagRoomPosition, Vector3 worldPosition, Vector3 originPosition, Quaternion originRotation)
     {
         TagId = tagId;
         Measured = measured;
         Listed = listed;
         Time = time;
         Distance = distance;
+        RotationSpeed = rotationSpeed;
         TagRoomPosition = tagRoomPosition;
         WorldPosition = worldPosition;
         OriginPosition = originPosition;
@@ -100,6 +103,9 @@ public class AprilTagRoomLocalizer : MonoBehaviour
     [SerializeField] private bool continuousScan;
     [Tooltip("Seconds between continuous-scan frames (0 = every camera frame).")]
     [SerializeField] private float scanIntervalSeconds = 0.5f;
+
+    [Tooltip("Frames taken while the camera turns faster than this (deg/s) are dropped: a small mismatch between image and pose times becomes a rotation error. 0 = keep all.")]
+    [SerializeField] private float maxRotationSpeedDegreesPerSecond = 8f;
 
     [Tooltip("Log per-frame timing (image prepare, detection, pose, apply, latency) this often while scanning or acquiring; also when an acquisition ends.")]
     [SerializeField] private float timingLogIntervalSeconds = 30f;
@@ -182,6 +188,13 @@ public class AprilTagRoomLocalizer : MonoBehaviour
     private double pendingPrepareMs;
 
     private readonly FrameTiming timing = new();
+
+    // Camera rotation speed, from the main camera's motion each Update.
+    private Transform rotationReference;
+    private Quaternion lastRotation;
+    private float lastRotationTime = -1f;
+    private float rotationSpeed;
+    private float frameRotationSpeed;
     private float lastTimingLogTime;
 
     // For components that add the localizer at runtime; call before its Start().
@@ -359,6 +372,8 @@ public class AprilTagRoomLocalizer : MonoBehaviour
 
     private void Update()
     {
+        TrackRotationSpeed();
+
         if (pendingDetection != null && pendingDetection.IsCompleted)
         {
             ApplyDetection();
@@ -388,6 +403,7 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         frameInFlight = true;
         frameRequestTimestamp = Stopwatch.GetTimestamp();
         frameRequestTime = Time.time;
+        frameRotationSpeed = rotationSpeed;
         lastScanRequestTime = Time.time;
         if (!cameraSource.TryRequestFrame(onFrameCaptured))
         {
@@ -517,14 +533,15 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         var start = Stopwatch.GetTimestamp();
         var result = task.Result;
         var frame = pendingFrame;
-        foreach (var sample in result.Samples)
+        var rejected = maxRotationSpeedDegreesPerSecond > 0f && frameRotationSpeed > maxRotationSpeedDegreesPerSecond;
+        foreach (var sample in rejected ? new List<CameraTagSample>() : result.Samples)
         {
             var sessionTagPosition = frame.CameraPosition + frame.CameraRotation * sample.PositionCameraLocal;
             var sessionTagRotation = frame.CameraRotation * sample.RotationCameraLocal;
             if (!sample.Listed)
             {
                 TagObserved?.Invoke(new TagObservation(sample.TagId, false, false, frameRequestTime, sample.PositionCameraLocal.magnitude,
-                    Vector3.zero, sessionTagPosition, sessionTagPosition, Quaternion.identity));
+                    frameRotationSpeed, Vector3.zero, sessionTagPosition, sessionTagPosition, Quaternion.identity));
                 continue;
             }
             var known = tagRegistry[sample.TagId];
@@ -542,7 +559,7 @@ public class AprilTagRoomLocalizer : MonoBehaviour
             var originPosition = sessionTagPosition - originRotation * known.position;
 
             TagObserved?.Invoke(new TagObservation(sample.TagId, known.measured, true, frameRequestTime, sample.PositionCameraLocal.magnitude,
-                known.position, sessionTagPosition, originPosition, originRotation));
+                frameRotationSpeed, known.position, sessionTagPosition, originPosition, originRotation));
 
             if (armed && AddAcquisitionSample(sample, known.position, sessionTagPosition, originPosition, originRotation))
             {
@@ -552,7 +569,8 @@ public class AprilTagRoomLocalizer : MonoBehaviour
 
         var end = Stopwatch.GetTimestamp();
         timing.Add(pendingPrepareMs, result.DetectMs, result.PoseMs, Milliseconds(start, end),
-            Milliseconds(frameRequestTimestamp, result.DeliveredTimestamp), Milliseconds(frameRequestTimestamp, end));
+            Milliseconds(frameRequestTimestamp, result.DeliveredTimestamp), Milliseconds(frameRequestTimestamp, end),
+            frameRotationSpeed, result.Samples.Count > 0, rejected && result.Samples.Count > 0);
     }
 
     // Accumulates one sample into the acquisition window; true if it completed
@@ -665,6 +683,28 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         return $"sd {Mathf.Sqrt(sq / yaws.Count):F2} deg, max {max:F2} deg";
     }
 
+    // Rotation speed of the main camera (the headset or phone), lightly smoothed.
+    private void TrackRotationSpeed()
+    {
+        if (rotationReference == null)
+        {
+            rotationReference = Camera.main != null ? Camera.main.transform : null;
+            if (rotationReference == null)
+            {
+                return;
+            }
+        }
+        var now = Time.unscaledTime;
+        var rotation = rotationReference.rotation;
+        if (lastRotationTime >= 0f && now > lastRotationTime)
+        {
+            var speed = Quaternion.Angle(lastRotation, rotation) / (now - lastRotationTime);
+            rotationSpeed = Mathf.Lerp(rotationSpeed, speed, 0.5f);
+        }
+        lastRotation = rotation;
+        lastRotationTime = now;
+    }
+
     private static double Milliseconds(long from, long to) => (to - from) * 1000.0 / Stopwatch.Frequency;
 
     private void LogTiming(string reason)
@@ -685,6 +725,8 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         private float startTime;
         private double prepareSum, prepareMax, detectSum, detectMax, poseSum, poseMax, applySum, applyMax;
         private double latencySum, latencyMax, totalSum, totalMax;
+        private double rotationSum, rotationMax;
+        private int framesWithTags, rejectedWithTags;
 
         public int Frames { get; private set; }
 
@@ -694,11 +736,17 @@ public class AprilTagRoomLocalizer : MonoBehaviour
             Frames = 0;
             prepareSum = prepareMax = detectSum = detectMax = poseSum = poseMax = applySum = applyMax = 0;
             latencySum = latencyMax = totalSum = totalMax = 0;
+            rotationSum = rotationMax = 0;
+            framesWithTags = rejectedWithTags = 0;
         }
 
-        public void Add(double prepareMs, double detectMs, double poseMs, double applyMs, double latencyMs, double totalMs)
+        public void Add(double prepareMs, double detectMs, double poseMs, double applyMs, double latencyMs, double totalMs,
+            float rotationSpeed, bool hadTags, bool rejected)
         {
             Frames++;
+            rotationSum += rotationSpeed; rotationMax = Math.Max(rotationMax, rotationSpeed);
+            framesWithTags += hadTags ? 1 : 0;
+            rejectedWithTags += rejected ? 1 : 0;
             prepareSum += prepareMs; prepareMax = Math.Max(prepareMax, prepareMs);
             detectSum += detectMs; detectMax = Math.Max(detectMax, detectMs);
             poseSum += poseMs; poseMax = Math.Max(poseMax, poseMs);
@@ -713,7 +761,8 @@ public class AprilTagRoomLocalizer : MonoBehaviour
             return $"{Frames} frames in {seconds:F1}s ({Frames / seconds:F1}/s); ms mean/max: " +
                    $"main thread: prepare {prepareSum / Frames:F1}/{prepareMax:F1}, apply {applySum / Frames:F2}/{applyMax:F2}; " +
                    $"worker: detect {detectSum / Frames:F1}/{detectMax:F1}, pose {poseSum / Frames:F2}/{poseMax:F2}; " +
-                   $"latency {latencySum / Frames:F1}/{latencyMax:F1}, request to applied {totalSum / Frames:F1}/{totalMax:F1}";
+                   $"latency {latencySum / Frames:F1}/{latencyMax:F1}, request to applied {totalSum / Frames:F1}/{totalMax:F1}; " +
+                   $"rotation {rotationSum / Frames:F1}/{rotationMax:F1} deg/s, {rejectedWithTags} of {framesWithTags} frames with tags dropped for turning";
         }
     }
 
