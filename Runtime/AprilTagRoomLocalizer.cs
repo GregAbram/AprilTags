@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using AprilTag.Interop;
 using Unity.Mathematics;
@@ -46,6 +47,11 @@ public readonly struct RoomOriginEstimate
 public readonly struct TagObservation
 {
     public readonly int TagId;
+    // Measured: listed with a surveyed pose that defines the room frame.
+    // Listed: in the config at all (an unlisted tag was detected because the
+    // config allows learning unlisted tags; its TagRoomPosition is meaningless).
+    public readonly bool Measured;
+    public readonly bool Listed;
     public readonly float Time;
     public readonly float Distance;
     public readonly Vector3 TagRoomPosition;
@@ -53,10 +59,12 @@ public readonly struct TagObservation
     public readonly Vector3 OriginPosition;
     public readonly Quaternion OriginRotation;
 
-    public TagObservation(int tagId, float time, float distance, Vector3 tagRoomPosition,
+    public TagObservation(int tagId, bool measured, bool listed, float time, float distance, Vector3 tagRoomPosition,
         Vector3 worldPosition, Vector3 originPosition, Quaternion originRotation)
     {
         TagId = tagId;
+        Measured = measured;
+        Listed = listed;
         Time = time;
         Distance = distance;
         TagRoomPosition = tagRoomPosition;
@@ -143,7 +151,25 @@ public class AprilTagRoomLocalizer : MonoBehaviour
     private float principalPointCy;
     private float focalLengthFx;
     private float focalLengthFy;
-    private readonly Dictionary<int, (Vector3 position, Quaternion rotation, float sizeMeters)> tagRegistry = new();
+    private readonly Dictionary<int, (Vector3 position, Quaternion rotation, float sizeMeters, bool measured)> tagRegistry = new();
+    private bool learnUnlistedTags;
+    private float defaultTagSizeMeters;
+
+    public bool IsConfigLoaded { get; private set; }
+
+    // Identifies the measured tags' surveyed poses, so learned positions saved
+    // under a different survey can be recognized and discarded.
+    public string MeasuredTagsFingerprint { get; private set; } = "";
+
+    // A listed tag's configured room pose (meaningful as ground truth only if measured).
+    public bool TryGetConfiguredTag(int tagId, out Vector3 roomPosition, out Quaternion roomRotation, out bool measured)
+    {
+        var found = tagRegistry.TryGetValue(tagId, out var tag);
+        roomPosition = tag.position;
+        roomRotation = tag.rotation;
+        measured = found && tag.measured;
+        return found;
+    }
 
     // One frame in flight at a time: requested, then detected on a worker, then
     // applied here. The source doesn't rewrite its image until the next request.
@@ -310,15 +336,25 @@ public class AprilTagRoomLocalizer : MonoBehaviour
             yield break;
         }
 
+        // No tag marked measured (older configs): treat them all as measured.
+        var anyMeasured = Array.Exists(config.tags, t => t.measured);
         tagRegistry.Clear();
         foreach (var tag in config.tags)
         {
             var position = new Vector3(tag.x, tag.y, tag.z);
             var rotation = Quaternion.Euler(0, tag.yawDegrees, 0);
-            tagRegistry[tag.id] = (position, rotation, tag.sizeMeters);
+            tagRegistry[tag.id] = (position, rotation, tag.sizeMeters, tag.measured || !anyMeasured);
         }
 
-        Debug.Log($"[AprilTagRoomLocalizer] Loaded room config: {tagRegistry.Count} known tag(s) from {(File.Exists(overridePath) ? overridePath : "StreamingAssets")}");
+        learnUnlistedTags = config.learnUnlistedTags && config.defaultTagSizeMeters > 0f;
+        defaultTagSizeMeters = config.defaultTagSizeMeters;
+        MeasuredTagsFingerprint = string.Join(";", tagRegistry.Where(t => t.Value.measured).OrderBy(t => t.Key)
+            .Select(t => $"{t.Key}:{t.Value.position.x:F3},{t.Value.position.y:F3},{t.Value.position.z:F3},{t.Value.rotation.eulerAngles.y:F1}"));
+        IsConfigLoaded = true;
+
+        var measuredIds = string.Join(", ", config.tags.Where(t => tagRegistry[t.id].measured).Select(t => t.id));
+        Debug.Log($"[AprilTagRoomLocalizer] Loaded room config: {tagRegistry.Count} listed tag(s) from {(File.Exists(overridePath) ? overridePath : "StreamingAssets")}; measured: {(anyMeasured ? measuredIds : "all (none marked)")}; " +
+                  (learnUnlistedTags ? $"unlisted tags learned at {defaultTagSizeMeters * 100f:F2} cm" : "unlisted tags ignored"));
     }
 
     private void Update()
@@ -376,13 +412,15 @@ public class AprilTagRoomLocalizer : MonoBehaviour
     private readonly struct CameraTagSample
     {
         public readonly int TagId;
+        public readonly bool Listed;
         public readonly Vector2 PixelCenter;
         public readonly Vector3 PositionCameraLocal;
         public readonly Quaternion RotationCameraLocal;
 
-        public CameraTagSample(int tagId, Vector2 pixelCenter, Vector3 positionCameraLocal, Quaternion rotationCameraLocal)
+        public CameraTagSample(int tagId, bool listed, Vector2 pixelCenter, Vector3 positionCameraLocal, Quaternion rotationCameraLocal)
         {
             TagId = tagId;
+            Listed = listed;
             PixelCenter = pixelCenter;
             PositionCameraLocal = positionCameraLocal;
             RotationCameraLocal = rotationCameraLocal;
@@ -411,10 +449,14 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         for (var i = 0; i < detections.Length; i++)
         {
             ref var det = ref detections[i];
-            if (!tagRegistry.TryGetValue(det.ID, out var known))
+            var listed = tagRegistry.TryGetValue(det.ID, out var known);
+            // Unlisted tags only if the config asks for them, and only perfect
+            // decodes (no corrected bit errors), to keep stray IDs out.
+            if (!listed && (!learnUnlistedTags || det.Hamming != 0))
             {
                 continue;
             }
+            var sizeMeters = listed ? known.sizeMeters : defaultTagSizeMeters;
 
             // Only trust detections within the angular range we've actually
             // validated with ground-truth testing - accuracy degrades at steeper
@@ -429,7 +471,7 @@ public class AprilTagRoomLocalizer : MonoBehaviour
             }
 
             var info = new DetectionInfo(
-                ref det, known.sizeMeters,
+                ref det, sizeMeters,
                 focalLengthFx, focalLengthFy,
                 principalPointCx, principalPointCy);
 
@@ -447,7 +489,7 @@ public class AprilTagRoomLocalizer : MonoBehaviour
             var rawQuat = math.quaternion(rawRot);
             var flippedQuat = rawQuat.value * math.float4(-1, 1, -1, 1);
 
-            result.Samples.Add(new CameraTagSample(det.ID,
+            result.Samples.Add(new CameraTagSample(det.ID, listed,
                 new Vector2((float)det.Center.x, (float)det.Center.y),
                 new Vector3(tagPosition.x, tagPosition.y, tagPosition.z),
                 new Quaternion(flippedQuat.x, flippedQuat.y, flippedQuat.z, flippedQuat.w)));
@@ -475,9 +517,15 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         var frame = pendingFrame;
         foreach (var sample in result.Samples)
         {
-            var known = tagRegistry[sample.TagId];
             var sessionTagPosition = frame.CameraPosition + frame.CameraRotation * sample.PositionCameraLocal;
             var sessionTagRotation = frame.CameraRotation * sample.RotationCameraLocal;
+            if (!sample.Listed)
+            {
+                TagObserved?.Invoke(new TagObservation(sample.TagId, false, false, frameRequestTime, sample.PositionCameraLocal.magnitude,
+                    Vector3.zero, sessionTagPosition, sessionTagPosition, Quaternion.identity));
+                continue;
+            }
+            var known = tagRegistry[sample.TagId];
 
             // Solve for the room origin's pose in this session's world space, given
             // this tag's known fixed pose in room coordinates and its just-detected
@@ -491,7 +539,7 @@ public class AprilTagRoomLocalizer : MonoBehaviour
             var originRotation = Quaternion.LookRotation(flatForward, Vector3.up);
             var originPosition = sessionTagPosition - originRotation * known.position;
 
-            TagObserved?.Invoke(new TagObservation(sample.TagId, frameRequestTime, sample.PositionCameraLocal.magnitude,
+            TagObserved?.Invoke(new TagObservation(sample.TagId, known.measured, true, frameRequestTime, sample.PositionCameraLocal.magnitude,
                 known.position, sessionTagPosition, originPosition, originRotation));
 
             if (armed && AddAcquisitionSample(sample, known.position, sessionTagPosition, originPosition, originRotation))

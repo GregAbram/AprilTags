@@ -66,6 +66,32 @@ localizer's spread log:
    - the displayed transform eases toward the new pose instead of jumping
      (snaps on first placement and after a reset).
 
+## Measured anchors and learned tags (added 2026-10-08)
+
+The first Quest test placed tag 9's marker visibly in front of its wall: with
+every configured tag treated as ground truth, a rough config entry pulls the
+fit and is drawn where the config says, not where the tag is. And if devices
+anchor on different tags they disagree by those config errors. So:
+
+- `"measured": true` marks the carefully surveyed tags (if none is marked, all
+  are). **Only measured tags place the room.** It is *anchored* by two or more
+  measured tags (RoomFit), or by one measured tag seen within 1.2 m in at least
+  8 frames, with yaw from those close frames only (0.3° sd per frame at 0.8 m,
+  so well under 1 cm at 5 m). Before that the placement is *provisional* and
+  nothing is learned.
+- Every other tag's room position is **learned** once anchored: each sighting
+  is mapped into room coordinates and averaged (weighted toward close range).
+  Saved to `learned_tags.json` in persistentDataPath, keyed by a fingerprint of
+  the measured tags' surveyed poses so a re-survey discards stale learning.
+- `"learnUnlistedTags": true` with `"defaultTagSizeMeters"` also detects tags
+  not in the config at all (perfect decodes only); a tag printed at another
+  size must be listed with its size, since distance scales with it.
+- Established learned tags (20+ sightings) help hold the room against drift at
+  half the weight of measured ones and can re-anchor after a tracking reset.
+  With one tag in view only its position corrects the room, never its yaw.
+- Only measured or established tags can declare a tracking reset; a learned
+  tag that keeps disagreeing (moved, or hand-held) is unlearned instead.
+
 ## Open questions to measure next
 
 - Coarser decimation for idle scans: 4 would cut detection ~4× but may lose
