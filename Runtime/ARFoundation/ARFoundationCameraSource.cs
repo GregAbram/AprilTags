@@ -62,7 +62,7 @@ public class ARFoundationCameraSource : AprilTagCameraSource
     public override bool TryGetIntrinsics(out PinholeIntrinsics intrinsics)
     {
         intrinsics = default;
-        if (!IsPlaying || !cameraManager.TryGetIntrinsics(out _))
+        if (!IsPlaying || !cameraManager.TryGetIntrinsics(out var cameraIntrinsics))
         {
             return false;
         }
