@@ -105,6 +105,9 @@ public class RoomAnchor : MonoBehaviour
         public float weightSum;
         public int samples;
         [NonSerialized] public int disagreements;
+        // Loaded from a saved survey: its position stays fixed, so devices
+        // sharing the file keep identical tag positions.
+        [NonSerialized] public bool frozen;
         [NonSerialized] public float rotationSpeedSum;
         [NonSerialized] public float rotationSpeedMax;
 
@@ -410,16 +413,18 @@ public class RoomAnchor : MonoBehaviour
         }
         var measuredCount = correspondences.Count(c => IsMeasured(c.TagId));
 
-        if (correspondences.Count >= 2 && (measuredCount >= 2 || IsAnchored || measuredCount == 0) &&
-            RoomFit.TryFit(correspondences, out var fit))
+        if (correspondences.Count >= 2 && RoomFit.TryFit(correspondences, out var fit))
         {
-            // Two measured tags anchor; learned tags (saved earlier, or learned
-            // this session) re-anchor after a reset and hold the room once anchored.
+            // Any two or more tags with known room positions - measured, or
+            // learned (this session, or a saved survey shared between devices) -
+            // anchor by fitting positions: no single tag's yaw is used, which is
+            // only reliable to ~1-2 deg (iPhone) even up close.
             LastFit = fit;
             SetTarget(fit.Position, fit.Rotation);
             if (!IsAnchored)
             {
                 IsAnchored = true;
+                Debug.Log($"[RoomAnchor] Anchored by fitting {correspondences.Count} tags' positions ({measuredCount} measured, {correspondences.Count - measuredCount} learned)");
             }
         }
         else if (IsAnchored)
@@ -511,6 +516,10 @@ public class RoomAnchor : MonoBehaviour
         }
 
         tag.disagreements = 0;
+        if (tag.frozen)
+        {
+            return;
+        }
         var position = (tag.Position * tag.weightSum + roomPosition * weight) / (tag.weightSum + weight);
         (tag.x, tag.y, tag.z) = (position.x, position.y, position.z);
         tag.weightSum += weight;
@@ -543,6 +552,7 @@ public class RoomAnchor : MonoBehaviour
             }
             foreach (var tag in file.tags)
             {
+                tag.frozen = tag.samples >= establishedSamples;
                 learned[tag.id] = tag;
             }
             Debug.Log($"[RoomAnchor] Loaded {learned.Count} learned tag(s) from {LearnedPath}");
