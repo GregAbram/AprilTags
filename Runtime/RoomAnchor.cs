@@ -183,10 +183,24 @@ public class RoomAnchor : MonoBehaviour
         get
         {
             var text = new StringBuilder();
-            text.Append(!IsLocalized ? "Room: looking for a measured tag"
-                : !IsAnchored ? $"Room: provisional - walk within {anchorMaxDistance:F1} m of a measured tag"
-                : LastFit.HasValue ? $"Room: anchored, fit from {LastFit.Value.Residuals.Count} tags, RMS {LastFit.Value.RmsResidual * 100f:F1} cm"
-                : "Room: anchored");
+            if (!IsLocalized)
+            {
+                text.Append("Room: looking for a measured tag");
+            }
+            else if (!IsAnchored)
+            {
+                // Progress toward anchoring on the closest measured tag in view.
+                var closest = histories.Where(h => h.Value.Observations.Count > 0 && IsMeasured(h.Key))
+                    .OrderBy(h => h.Value.Observations[^1].Distance).FirstOrDefault();
+                var close = closest.Value?.Observations.Count(o => o.Distance <= anchorMaxDistance) ?? 0;
+                text.Append($"Room: provisional - get within {anchorMaxDistance:F1} m of tag {closest.Key} ({Mathf.Min(close, anchorSamples)}/{anchorSamples} close sightings)");
+            }
+            else
+            {
+                text.Append(LastFit.HasValue
+                    ? $"Room: anchored, fit from {LastFit.Value.Residuals.Count} tags, RMS {LastFit.Value.RmsResidual * 100f:F1} cm"
+                    : "Room: anchored");
+            }
             if (localizer != null)
             {
                 text.Append($"   scan every {localizer.ScanIntervalSeconds:F1}s");
@@ -196,15 +210,28 @@ public class RoomAnchor : MonoBehaviour
             {
                 histories.TryGetValue(id, out var history);
                 learned.TryGetValue(id, out var tag);
-                var isMeasured = IsMeasured(id);
-                text.Append($"  tag {id}: {(isMeasured ? "measured" : tag == null ? "seen" : tag.samples >= establishedSamples ? "learned" : "learning")}");
-                if (!isMeasured && tag != null)
+                text.Append($"  tag {id}: ");
+                if (IsMeasured(id))
                 {
-                    text.Append($" ({tag.samples})");
+                    text.Append("measured");
+                }
+                else if (tag != null && tag.samples >= establishedSamples)
+                {
+                    text.Append($"learned ({tag.samples})");
+                }
+                else if (tag != null)
+                {
+                    text.Append($"learning ({tag.samples}/{establishedSamples})");
+                }
+                else
+                {
+                    text.Append(IsAnchored ? "seen" : "seen - learned once the room is anchored");
                 }
                 if (history != null && history.Observations.Count > 0)
                 {
-                    text.Append($", last seen {Time.time - history.Observations[^1].Time:F0}s ago");
+                    var last = history.Observations[^1];
+                    var age = Time.time - last.Time;
+                    text.Append(age < 1f ? $", {last.Distance:F1} m away" : $", last seen {age:F0}s ago");
                 }
                 text.AppendLine();
             }
