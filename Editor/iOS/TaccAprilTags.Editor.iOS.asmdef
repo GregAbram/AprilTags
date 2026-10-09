@@ -1,0 +1,34 @@
+{
+    "name": "TaccAprilTags.Editor.iOS",
+    "rootNamespace": "",
+    "references": [
+        "TaccAprilTags.Runtime",
+        "TaccAprilTags.RoomCode",
+        "TaccAprilTags.ARFoundation",
+        "TaccAprilTags.Editor",
+        "Unity.XR.ARFoundation",
+        "Unity.XR.ARKit",
+        "Unity.XR.ARKit.Editor",
+        "Unity.XR.Management",
+        "Unity.XR.Management.Editor"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "TACC_APRILTAGS_ARKIT"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.xr.arkit",
+            "expression": "6.0.0",
+            "define": "TACC_APRILTAGS_ARKIT"
+        }
+    ],
+    "noEngineReferences": false
+}

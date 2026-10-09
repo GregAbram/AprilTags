@@ -3,13 +3,17 @@ using UnityEngine.SceneManagement;
 
 // On-screen controls for a survey scene (RoomAnchor in survey mode), drawn with OnGUI:
 // Scan now, Re-anchor, Start over (forget learned tags), Save (write the
-// surveyed room_config.json to persistentDataPath), Scene (switch). A survey
+// surveyed room_config.json to persistentDataPath), Scene (switch). With a
+// RoomSurvey, also the room name and printed tag size, and Start over begins a
+// new survey from nothing (the next tag seen defines the room). A survey
 // anchors on one tag's orientation and every learned position inherits its
 // error; phone cameras measure that less consistently than Quest 3 (1-2.6 deg
 // vs ~0.2-1.5 deg here), so survey with a Quest when there is one.
 public class SurveyScreenUI : MonoBehaviour
 {
     [SerializeField] private RoomAnchor roomAnchor;
+    [Tooltip("Optional: adds room name and tag size fields; Save and Start over go through it.")]
+    [SerializeField] private RoomSurvey roomSurvey;
     [Tooltip("Scene the Scene button loads; empty hides the button.")]
     [SerializeField] private string otherSceneName = "";
     [Tooltip("Shown after SURVEY in the status, e.g. a reminder that another device surveys more accurately.")]
@@ -19,7 +23,10 @@ public class SurveyScreenUI : MonoBehaviour
     private GUIStyle shadowStyle;
     private GUIStyle buttonStyle;
     private string saveMessage = "";
+    private GUIStyle fieldStyle;
     private Texture2D codeImage;
+    private string nameField;
+    private string sizeField;
 
     private void Awake()
     {
@@ -34,6 +41,8 @@ public class SurveyScreenUI : MonoBehaviour
         labelStyle ??= new GUIStyle(GUI.skin.label) { wordWrap = true };
         shadowStyle ??= new GUIStyle(labelStyle) { normal = { textColor = Color.black } };
         buttonStyle ??= new GUIStyle(GUI.skin.button);
+        fieldStyle ??= new GUIStyle(GUI.skin.textField);
+        fieldStyle.fontSize = Mathf.RoundToInt(unit * 0.6f);
         labelStyle.fontSize = Mathf.RoundToInt(unit * 0.55f);
         shadowStyle.fontSize = labelStyle.fontSize;
         buttonStyle.fontSize = Mathf.RoundToInt(unit * 0.6f);
@@ -56,7 +65,14 @@ public class SurveyScreenUI : MonoBehaviour
         }
         if (GUI.Button(new Rect(left + step * 2f, top, buttonWidth, buttonHeight), "Start over", buttonStyle))
         {
-            roomAnchor.ForgetLearnedTags();
+            if (roomSurvey != null)
+            {
+                roomSurvey.NewSurvey();
+            }
+            else
+            {
+                roomAnchor.ForgetLearnedTags();
+            }
             saveMessage = "";
             codeImage = null;
         }
@@ -70,8 +86,14 @@ public class SurveyScreenUI : MonoBehaviour
             SceneManager.LoadScene(otherSceneName);
         }
 
-        var text = "SURVEY" + (string.IsNullOrEmpty(note) ? "" : $" ({note})") + "\n" + roomAnchor.StatusText + saveMessage;
         var textTop = top + buttonHeight + unit * 0.3f;
+        if (roomSurvey != null)
+        {
+            textTop = SettingsRow(left, textTop, unit, buttonWidth, buttonHeight) + unit * 0.3f;
+        }
+
+        var text = "SURVEY" + (string.IsNullOrEmpty(note) ? "" : $" ({note})") + "\n" +
+                   (roomSurvey != null ? roomSurvey.SettingsLine + "\n" : "") + roomAnchor.StatusText + saveMessage;
         var area = new Rect(left, textTop, safe.width - unit, Screen.height - textTop);
         GUI.Label(new Rect(area.x + 2, area.y + 2, area.width, area.height), text, shadowStyle);
         GUI.Label(area, text, labelStyle);
@@ -86,8 +108,51 @@ public class SurveyScreenUI : MonoBehaviour
         }
     }
 
+    // Room name (applied as typed) and tag size in cm (applied by its button:
+    // a new size starts a new survey). Returns the row's bottom.
+    private float SettingsRow(float left, float top, float unit, float buttonWidth, float buttonHeight)
+    {
+        nameField ??= roomSurvey.RoomName;
+        sizeField ??= (roomSurvey.TagSizeMeters * 100f).ToString("0.##");
+        var x = left;
+        GUI.Label(new Rect(x, top + unit * 0.35f, unit * 3f, buttonHeight), "Room name", labelStyle);
+        x += unit * 3.2f;
+        var newName = GUI.TextField(new Rect(x, top, unit * 7f, buttonHeight), nameField, 40, fieldStyle);
+        if (newName != nameField)
+        {
+            nameField = newName;
+            roomSurvey.SetRoomName(newName);
+        }
+        x += unit * 7.6f;
+        GUI.Label(new Rect(x, top + unit * 0.35f, unit * 3.4f, buttonHeight), "Tag size (cm)", labelStyle);
+        x += unit * 3.6f;
+        sizeField = GUI.TextField(new Rect(x, top, unit * 2.6f, buttonHeight), sizeField, 6, fieldStyle);
+        x += unit * 3f;
+        var sizeChanged = float.TryParse(sizeField, out var cm) && Mathf.Abs(cm / 100f - roomSurvey.TagSizeMeters) > 1e-5f;
+        if (sizeChanged && GUI.Button(new Rect(x, top, buttonWidth, buttonHeight), "Set size", buttonStyle))
+        {
+            if (roomSurvey.SetTagSize(cm / 100f))
+            {
+                saveMessage = "";
+                codeImage = null;
+            }
+            else
+            {
+                saveMessage = "\nTag size must be 1-100 cm.";
+            }
+        }
+        return top + buttonHeight;
+    }
+
     private void Save()
     {
+        if (roomSurvey != null)
+        {
+            roomSurvey.Save();
+            saveMessage = "\n" + roomSurvey.SaveMessage;
+            codeImage = roomSurvey.SavedCodeImage;
+            return;
+        }
         if (!roomAnchor.IsAnchored)
         {
             saveMessage = "\nNot saved: the room isn't anchored yet.";

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.0 - 2026-10-09
+
+App building blocks, so a Survey app, the Locator template and apps built on
+it share one setup instead of copies.
+
+- `RoomSurvey`: a survey session - room name, printed tag size, optional
+  DataManager address (kept between runs), new survey from nothing (the first
+  tag seen defines the room), save with room code.
+- `SurveyScreenUI`: optional `RoomSurvey` adds name and tag size fields.
+- Quest: `QuestRoomControls` and `QuestSurveyControls` (system keyboard for
+  the name and size), `QuestStatusPanel`.
+- `AprilTagsAppStartup`: installs the QR decoder and starts the session log
+  from a scene object (reliable on device).
+- Editor: `AprilTagsAppInfo`, `AprilTagsSceneBuilder`, `AprilTagsIOSSetup`
+  (ARKit) and `AprilTagsQuestSetup` (Meta) - project settings, starting
+  scenes and builds; iOS file sharing for the app's Documents folder.
+- `RoomCodeReader` applies a code that changes only the name or DataManager.
+
 ## 0.4.0 - 2026-10-09
 
 Room codes: a room's surveyed config as a QR code that devices scan, instead

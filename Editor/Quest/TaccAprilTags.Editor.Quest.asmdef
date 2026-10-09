@@ -1,14 +1,23 @@
 {
-    "name": "TaccAprilTags.Quest",
+    "name": "TaccAprilTags.Editor.Quest",
     "rootNamespace": "",
     "references": [
         "TaccAprilTags.Runtime",
-        "AprilTag.Runtime",
-        "meta.xr.mrutilitykit",
+        "TaccAprilTags.RoomCode",
+        "TaccAprilTags.Quest",
+        "TaccAprilTags.Editor",
         "Oculus.VR",
+        "Oculus.VR.Editor",
+        "meta.xr.mrutilitykit",
+        "Unity.XR.OpenXR",
+        "Unity.XR.OpenXR.Editor",
+        "Unity.XR.Management",
+        "Unity.XR.Management.Editor",
         "Unity.TextMeshPro"
     ],
-    "includePlatforms": [],
+    "includePlatforms": [
+        "Editor"
+    ],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
     "overrideReferences": false,

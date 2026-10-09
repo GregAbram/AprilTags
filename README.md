@@ -98,6 +98,43 @@ for the measurements.
    phones and the editor).
 4. **Config:** `StreamingAssets/room_config.json` (see above).
 
+## App setup (Survey, Locator and your own apps)
+
+The quickest start is to copy the **Locator** project (github.com/GregAbram/Locator)
+and put your content under `Room/Content`. To set up a project yourself, the
+package's editor code does the platform setup and creates starting scenes.
+Declare the app once in an editor script:
+
+```csharp
+public static class MyApp
+{
+    public static readonly AprilTagsAppInfo App = new()
+    {
+        ProductName = "MyApp", BundleId = "edu.example.myapp", AppleTeamId = "...",
+        LogFileName = "myapp.log",
+        IPhoneScenes = new[] { "Assets/Scenes/iPhone MyApp.unity" },
+        QuestScenes = new[] { "Assets/Scenes/Quest MyApp.unity" },
+    };
+    [MenuItem("Tools/MyApp/Configure iOS")] static void IOS() => AprilTagsIOSSetup.Configure(App);
+    [MenuItem("Tools/MyApp/Configure Quest")] static void Quest() => AprilTagsQuestSetup.Configure(App);
+}
+```
+
+- `AprilTagsIOSSetup` (with ARKit) and `AprilTagsQuestSetup` (with the Meta SDK)
+  set player and XR settings, create missing scenes (never modify existing
+  ones) and `Build(App)`. A scene with "Survey" in its file name is a survey
+  (`RoomSurvey`, `SurveyScreenUI` / `QuestSurveyControls`); any other is a
+  locator (`RoomCodeReader`, reference post, `RoomScreenUI` /
+  `QuestRoomControls`, and an empty `Room/Content`).
+- Pass `(scenePath, parts) => ...` as the second argument to add your own
+  objects to new scenes; `AprilTagsSceneParts` has the localizer, anchor,
+  reader or survey, and `Content`.
+- Every scene gets `AprilTagsAppStartup`, which installs the QR decoder and
+  starts the session log.
+- Quest: the project still needs `Assets/Plugins/Android/AndroidManifest.xml`
+  with `horizonos.permission.HEADSET_CAMERA`. The setup turns on the system
+  keyboard (`requiresSystemKeyboard`) for the survey's text entry.
+
 ## Room codes (QR)
 
 Instead of building a config into every app, give the room a **QR code**:
