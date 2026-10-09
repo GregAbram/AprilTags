@@ -42,10 +42,12 @@ public class RoomAnchor : MonoBehaviour
     [Tooltip("Keep scanning for tags in the background (no Acquire needed).")]
     [SerializeField] private bool scanContinuously = true;
 
-    [Tooltip("Keep child content inactive until the room is first placed, so it never appears at the wrong place.")]
+    [Tooltip("Keep child content inactive until the room is anchored, so it never appears at a provisional place.")]
     [SerializeField] private bool hideUntilLocalized = true;
 
     [Header("Anchoring")]
+    [Tooltip("With two or more measured tags configured, anchor only by fitting two or more tags' positions: a single tag's yaw varies by device and viewpoint (1-3 deg), so viewers anchored on one tag disagree.")]
+    [SerializeField] private bool requireTwoTagsWhenAvailable = true;
     [Tooltip("A single measured tag anchors the room only from observations this close (m); single-frame yaw is poor farther away.")]
     [SerializeField] private float anchorMaxDistance = 1.2f;
     [Tooltip("Close-range observations of a single measured tag needed to anchor.")]
@@ -148,6 +150,7 @@ public class RoomAnchor : MonoBehaviour
     private int lastLoggedCloseSightings = -1;
     private float lastDistanceLogTime = float.NegativeInfinity;
     private int surveyAnchorId = -1;
+    private bool childrenShown;
     private readonly HashSet<int> loggedNotUpright = new();
 
     public bool SurveyMode => surveyMode;
@@ -175,6 +178,7 @@ public class RoomAnchor : MonoBehaviour
         {
             surveyAnchorId = -1;
         }
+        UpdateChildrenVisibility();
         Debug.Log("[RoomAnchor] Observations cleared; re-anchoring");
     }
 
@@ -228,7 +232,9 @@ public class RoomAnchor : MonoBehaviour
                 var closest = histories.Where(h => h.Value.Observations.Count > 0 && IsMeasured(h.Key))
                     .OrderBy(h => h.Value.Observations[^1].Distance).FirstOrDefault();
                 var close = closest.Value?.Observations.Count(o => o.Distance <= anchorMaxDistance) ?? 0;
-                text.Append($"Room: provisional - get within {anchorMaxDistance:F1} m of tag {closest.Key} ({Mathf.Min(close, anchorSamples)}/{anchorSamples} close sightings)");
+                text.Append(SingleTagAnchoringAllowed
+                    ? $"Room: provisional - get within {anchorMaxDistance:F1} m of tag {closest.Key} ({Mathf.Min(close, anchorSamples)}/{anchorSamples} close sightings)"
+                    : "Room: provisional - get a second tag in view");
             }
             else
             {
@@ -301,6 +307,11 @@ public class RoomAnchor : MonoBehaviour
         var relative = o.WorldRotation * Quaternion.Inverse(tagRoomRotation);
         return Quaternion.LookRotation(Vector3.ProjectOnPlane(relative * Vector3.forward, Vector3.up), Vector3.up);
     }
+
+    // One tag may anchor only in a survey, or when the config has a single
+    // measured tag; otherwise two must be fitted.
+    private bool SingleTagAnchoringAllowed =>
+        surveyMode || !requireTwoTagsWhenAvailable || localizer == null || localizer.MeasuredTagCount < 2;
 
     private bool IsEstablished(int tagId) => learned.TryGetValue(tagId, out var tag) && tag.samples >= establishedSamples;
 
@@ -533,7 +544,7 @@ public class RoomAnchor : MonoBehaviour
             LastFit = null;
             SetTarget(measured.MeanWorldPosition - rotation * tagRoomPosition, rotation);
             LogAnchoringProgress(measured.Observations[^1], close);
-            if (close >= anchorSamples)
+            if (close >= anchorSamples && SingleTagAnchoringAllowed)
             {
                 IsAnchored = true;
                 LogAnchoringSpread(measured.Observations.Where(o => o.Distance <= anchorMaxDistance).ToList(), rotation, tagRoomRotation);
@@ -541,6 +552,7 @@ public class RoomAnchor : MonoBehaviour
         }
 
         LogStateChange(correspondences.Count);
+        UpdateChildrenVisibility();
         Localized?.Invoke(this);
     }
 
@@ -553,13 +565,16 @@ public class RoomAnchor : MonoBehaviour
             transform.SetPositionAndRotation(position, rotation);
             snapNext = false;
         }
-        if (!IsLocalized)
+        IsLocalized = true;
+    }
+
+    // Content appears once anchored and hides again while re-anchoring.
+    private void UpdateChildrenVisibility()
+    {
+        if (hideUntilLocalized && childrenShown != IsAnchored)
         {
-            IsLocalized = true;
-            if (hideUntilLocalized)
-            {
-                SetChildrenActive(true);
-            }
+            childrenShown = IsAnchored;
+            SetChildrenActive(IsAnchored);
         }
     }
 

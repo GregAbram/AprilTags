@@ -179,6 +179,7 @@ public class AprilTagRoomLocalizer : MonoBehaviour
     public RoomConfig LoadedConfig { get; private set; }
     public string ConfigFileName => configFileName;
     public int ListedTagCount => tagRegistry.Count;
+    public int MeasuredTagCount => tagRegistry.Values.Count(t => t.measured);
     public float DefaultTagSizeMeters => defaultTagSizeMeters;
 
     // Detect unlisted tags too, at this printed size (a survey learns them all).
