@@ -1,0 +1,19 @@
+{
+    "name": "TaccAprilTags.RoomCode",
+    "rootNamespace": "",
+    "references": [
+        "TaccAprilTags.Runtime",
+        "AprilTag.Runtime"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "zxing.dll"
+    ],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

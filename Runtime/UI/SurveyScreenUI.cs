@@ -19,6 +19,7 @@ public class SurveyScreenUI : MonoBehaviour
     private GUIStyle shadowStyle;
     private GUIStyle buttonStyle;
     private string saveMessage = "";
+    private Texture2D codeImage;
 
     private void Awake()
     {
@@ -57,6 +58,7 @@ public class SurveyScreenUI : MonoBehaviour
         {
             roomAnchor.ForgetLearnedTags();
             saveMessage = "";
+            codeImage = null;
         }
         if (GUI.Button(new Rect(left + step * 3f, top, buttonWidth, buttonHeight), "Save", buttonStyle))
         {
@@ -73,6 +75,15 @@ public class SurveyScreenUI : MonoBehaviour
         var area = new Rect(left, textTop, safe.width - unit, Screen.height - textTop);
         GUI.Label(new Rect(area.x + 2, area.y + 2, area.width, area.height), text, shadowStyle);
         GUI.Label(area, text, labelStyle);
+
+        // The saved room's QR code, for other devices to scan off this screen.
+        if (codeImage != null)
+        {
+            var size = Mathf.Min(Screen.width, Screen.height) * 0.55f;
+            var rect = new Rect(safe.xMax - size - unit * 0.5f, Screen.height - safe.yMin - size - unit * 0.5f, size, size);
+            GUI.DrawTexture(new Rect(rect.x - unit * 0.3f, rect.y - unit * 0.3f, size + unit * 0.6f, size + unit * 0.6f), Texture2D.whiteTexture);
+            GUI.DrawTexture(rect, codeImage);
+        }
     }
 
     private void Save()
@@ -83,8 +94,11 @@ public class SurveyScreenUI : MonoBehaviour
             return;
         }
         var (path, tags) = roomAnchor.SaveSurveyedConfig();
+        var config = roomAnchor.BuildSurveyedConfig();
+        codeImage = RoomCodeImage.Save(config);
         saveMessage = tags < 2
             ? $"\nSaved only {tags} tag - learn at least one more before using it."
-            : $"\nSaved {tags} tags to {System.IO.Path.GetFileName(path)}; used from the next start.";
+            : $"\nSaved {tags} tags (survey {RoomCode.SurveyId(config)}) to {System.IO.Path.GetFileName(path)}" +
+              (codeImage != null ? " and room_code.png - scan the code on screen with the other devices." : ".");
     }
 }

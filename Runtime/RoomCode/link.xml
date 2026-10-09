@@ -1,0 +1,4 @@
+<linker>
+  <!-- ZXing.Net: keep it whole under managed code stripping. -->
+  <assembly fullname="zxing" preserve="all"/>
+</linker>

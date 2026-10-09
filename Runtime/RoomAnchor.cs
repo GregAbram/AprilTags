@@ -339,7 +339,25 @@ public class RoomAnchor : MonoBehaviour
         if (localizer != null)
         {
             localizer.TagObserved += OnTagObserved;
+            localizer.ConfigChanged += OnConfigChanged;
         }
+    }
+
+    // A new room (e.g. from a scanned room code): start over - observations,
+    // anchoring, and learned tags (reloaded for the new survey).
+    private void OnConfigChanged(RoomConfig config)
+    {
+        histories.Clear();
+        learned.Clear();
+        learnedLoaded = false;
+        LastFit = null;
+        IsAnchored = false;
+        IsLocalized = false;
+        surveyAnchorId = -1;
+        snapNext = true;
+        lastLoggedCloseSightings = -1;
+        lastLoggedState = "";
+        UpdateChildrenVisibility();
     }
 
     private void OnDisable()
@@ -347,6 +365,7 @@ public class RoomAnchor : MonoBehaviour
         if (localizer != null)
         {
             localizer.TagObserved -= OnTagObserved;
+            localizer.ConfigChanged -= OnConfigChanged;
         }
         SaveLearned();
     }
@@ -656,6 +675,8 @@ public class RoomAnchor : MonoBehaviour
         }
         return new RoomConfig
         {
+            name = loaded?.name,
+            dataManager = loaded?.dataManager,
             room = loaded?.room,
             learnUnlistedTags = loaded?.learnUnlistedTags ?? true,
             defaultTagSizeMeters = localizer.DefaultTagSizeMeters,

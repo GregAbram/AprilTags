@@ -8,6 +8,8 @@ using UnityEngine.SceneManagement;
 public class RoomScreenUI : MonoBehaviour
 {
     [SerializeField] private RoomAnchor roomAnchor;
+    [Tooltip("Optional: shows the room's name and survey ID, and adds a Scan room code button.")]
+    [SerializeField] private RoomCodeReader roomCodeReader;
     [Tooltip("Scene the Scene button loads; empty hides the button.")]
     [SerializeField] private string otherSceneName = "";
 
@@ -35,7 +37,7 @@ public class RoomScreenUI : MonoBehaviour
         var safe = Screen.safeArea;
         var left = safe.xMin + unit * 0.5f;
         var top = Screen.height - safe.yMax + unit * 0.5f;
-        var buttonWidth = unit * 5.5f;
+        var buttonWidth = unit * 4.6f;
         var buttonHeight = unit * 1.6f;
         var step = buttonWidth + unit * 0.5f;
 
@@ -51,13 +53,26 @@ public class RoomScreenUI : MonoBehaviour
         {
             roomAnchor.ForgetLearnedTags();
         }
+        var next = 3f;
+        if (roomCodeReader != null &&
+            GUI.Button(new Rect(left + step * next++, top, buttonWidth, buttonHeight), roomCodeReader.IsScanning ? "Cancel scan" : "Scan room code", buttonStyle))
+        {
+            if (roomCodeReader.IsScanning)
+            {
+                roomCodeReader.CancelScan();
+            }
+            else
+            {
+                roomCodeReader.BeginScan();
+            }
+        }
         if (!string.IsNullOrEmpty(otherSceneName) &&
-            GUI.Button(new Rect(left + step * 3f, top, buttonWidth, buttonHeight), "Scene", buttonStyle))
+            GUI.Button(new Rect(left + step * next, top, buttonWidth, buttonHeight), "Scene", buttonStyle))
         {
             SceneManager.LoadScene(otherSceneName);
         }
 
-        var text = roomAnchor.StatusText;
+        var text = (roomCodeReader != null ? roomCodeReader.StatusLine + "\n" : "") + roomAnchor.StatusText;
         var textTop = top + buttonHeight + unit * 0.3f;
         var area = new Rect(left, textTop, safe.width - unit, Screen.height - textTop);
         GUI.Label(new Rect(area.x + 2, area.y + 2, area.width, area.height), text, shadowStyle);

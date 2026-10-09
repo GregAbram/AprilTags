@@ -3,6 +3,10 @@ using System;
 [Serializable]
 public class RoomConfig
 {
+    // A name for people (shown on screen, part of the room code); optional.
+    public string name;
+    // Where a PVLink client finds the DataManager, "host:port"; optional.
+    public string dataManager;
     public RoomDimensions room;
     public TagPlacement[] tags;
 

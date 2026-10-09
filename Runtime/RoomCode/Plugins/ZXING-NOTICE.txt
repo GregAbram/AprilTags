@@ -1,0 +1,5 @@
+zxing.dll is ZXing.Net 0.16.11 (lib/netstandard2.0), by Michael Jahn and
+contributors, https://github.com/micjahn/ZXing.Net - a .NET port of ZXing
+("Zebra Crossing", https://github.com/zxing/zxing). Taken unmodified from the
+NuGet package zxing.net 0.16.11 (nuget.org). Licensed under the Apache
+License, Version 2.0; see ZXING-LICENSE.txt.

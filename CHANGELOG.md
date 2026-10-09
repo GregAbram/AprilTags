@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.0 - 2026-10-09
+
+Room codes: a room's surveyed config as a QR code that devices scan, instead
+of a config built into each app.
+
+- `RoomCode`: compact text form of a config (name, DataManager address, tags)
+  and `SurveyId`. `RoomConfig` gains `name` and `dataManager`.
+- `RoomCodeReader`: scans when the device has no room or on `BeginScan()`,
+  applies and remembers a new room (persistentDataPath).
+- `AprilTagRoomLocalizer`: `ApplyConfig()` at runtime and `ConfigChanged`;
+  starts without a config; room-code decoding on the worker thread
+  (`ScanForRoomCode`, `RoomCodeFound`). `RoomAnchor` starts over on a new room.
+- `TaccAprilTags.RoomCode` assembly with ZXing.Net 0.16.11 (Apache 2.0):
+  decoder and QR image encoder; `RoomCodeImage.Save` writes room_code.txt/.png.
+- Surveys save the room code too; `SurveyScreenUI` shows it on screen;
+  `RoomScreenUI` shows the room and survey ID and a Scan room code button.
+- Editor: Tools > AprilTags > Save Room Code Image.
+
 ## 0.3.0 - 2026-10-09
 
 Background scanning, anchoring by fitting tag positions, and surveying a room

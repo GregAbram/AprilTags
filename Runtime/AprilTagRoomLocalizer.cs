@@ -168,11 +168,26 @@ public class AprilTagRoomLocalizer : MonoBehaviour
     private PinholeIntrinsics startupIntrinsics;
     private PinholeIntrinsics pendingIntrinsics;
     private float lastLoggedFx;
-    private readonly Dictionary<int, (Vector3 position, Quaternion rotation, float sizeMeters, bool measured)> tagRegistry = new();
+    // Replaced as a whole when a config is applied (never edited in place): the
+    // worker thread reads it while detecting.
+    private Dictionary<int, (Vector3 position, Quaternion rotation, float sizeMeters, bool measured)> tagRegistry = new();
     private bool learnUnlistedTags;
     private float defaultTagSizeMeters;
 
     public bool IsConfigLoaded { get; private set; }
+
+    // Raised on the main thread whenever a config is applied (at startup, or
+    // later, e.g. from a scanned room code).
+    public event Action<RoomConfig> ConfigChanged;
+
+    // Room codes (QR): a decoder, set by the optional QR assembly when present.
+    // While ScanForRoomCode is on, a frame every RoomCodeIntervalSeconds is also
+    // decoded on the worker thread, and any text found is raised as RoomCodeFound.
+    public static IRoomCodeDecoder DefaultRoomCodeDecoder { get; set; }
+    public IRoomCodeDecoder RoomCodeDecoder { get; set; }
+    public bool ScanForRoomCode { get; set; }
+    public float RoomCodeIntervalSeconds { get; set; } = 1f;
+    public event Action<string> RoomCodeFound;
 
     // The config as loaded (null until IsConfigLoaded), and its file name: a
     // file of that name in persistentDataPath overrides the bundled one.
@@ -219,6 +234,10 @@ public class AprilTagRoomLocalizer : MonoBehaviour
     private long frameRequestTimestamp;
     private float frameRequestTime;
     private float lastScanRequestTime = float.NegativeInfinity;
+    private float lastCodeAttemptTime = float.NegativeInfinity;
+    private bool decodeCodeThisFrame;
+
+    private IRoomCodeDecoder Decoder => RoomCodeDecoder ?? DefaultRoomCodeDecoder;
     private Task<DetectionResult> pendingDetection;
     private CameraFrame pendingFrame;
     private double pendingPrepareMs;
@@ -343,7 +362,7 @@ public class AprilTagRoomLocalizer : MonoBehaviour
             }
             else
             {
-                Debug.LogError($"[AprilTagRoomLocalizer] No room config at {streamingPath} or {overridePath}");
+                Debug.Log($"[AprilTagRoomLocalizer] No room config yet (none at {streamingPath} or {overridePath}) - scan a room code to set one");
             }
         }
         else
@@ -393,26 +412,46 @@ public class AprilTagRoomLocalizer : MonoBehaviour
             yield break;
         }
 
+        ApplyConfig(config, File.Exists(overridePath) ? overridePath : "StreamingAssets");
+    }
+
+    // Makes this the room: the tags to detect and their poses. Safe at any time;
+    // raises ConfigChanged. The source is only for the log.
+    public void ApplyConfig(RoomConfig config, string source = "code")
+    {
+        config.tags ??= Array.Empty<TagPlacement>();
         // No tag marked measured (older configs): treat them all as measured.
         var anyMeasured = Array.Exists(config.tags, t => t.measured);
-        tagRegistry.Clear();
+        var registry = new Dictionary<int, (Vector3 position, Quaternion rotation, float sizeMeters, bool measured)>();
         foreach (var tag in config.tags)
         {
             var position = new Vector3(tag.x, tag.y, tag.z);
             var rotation = Quaternion.Euler(0, tag.yawDegrees, 0);
-            tagRegistry[tag.id] = (position, rotation, tag.sizeMeters, tag.measured || !anyMeasured);
+            registry[tag.id] = (position, rotation, tag.sizeMeters, tag.measured || !anyMeasured);
         }
 
+        tagRegistry = registry;
         learnUnlistedTags = config.learnUnlistedTags && config.defaultTagSizeMeters > 0f;
         defaultTagSizeMeters = config.defaultTagSizeMeters;
-        MeasuredTagsFingerprint = string.Join(";", tagRegistry.Where(t => t.Value.measured).OrderBy(t => t.Key)
+        MeasuredTagsFingerprint = string.Join(";", registry.Where(t => t.Value.measured).OrderBy(t => t.Key)
             .Select(t => $"{t.Key}:{t.Value.position.x:F3},{t.Value.position.y:F3},{t.Value.position.z:F3},{t.Value.rotation.eulerAngles.y:F1}"));
         LoadedConfig = config;
         IsConfigLoaded = true;
 
-        var measuredIds = string.Join(", ", config.tags.Where(t => tagRegistry[t.id].measured).Select(t => t.id));
-        Debug.Log($"[AprilTagRoomLocalizer] Loaded room config: {tagRegistry.Count} listed tag(s) from {(File.Exists(overridePath) ? overridePath : "StreamingAssets")}; measured: {(anyMeasured ? measuredIds : "all (none marked)")}; " +
+        var measuredIds = string.Join(", ", config.tags.Where(t => registry[t.id].measured).Select(t => t.id));
+        Debug.Log($"[AprilTagRoomLocalizer] Room config{(string.IsNullOrEmpty(config.name) ? "" : $" '{config.name}'")} (survey {RoomCode.SurveyId(config)}) from {source}: " +
+                  $"{registry.Count} listed tag(s), measured: {(anyMeasured ? measuredIds : "all (none marked)")}; " +
                   (learnUnlistedTags ? $"unlisted tags learned at {defaultTagSizeMeters * 100f:F2} cm" : "unlisted tags ignored"));
+        ConfigChanged?.Invoke(config);
+    }
+
+    // Saves a config as this device's room (persistentDataPath, under the config
+    // file name): it overrides the bundled one from the next start.
+    public void SaveConfigOverride(RoomConfig config)
+    {
+        var path = Path.Combine(Application.persistentDataPath, configFileName);
+        File.WriteAllText(path, JsonUtility.ToJson(config, true));
+        Debug.Log($"[AprilTagRoomLocalizer] Saved room config (survey {RoomCode.SurveyId(config)}) to {path}");
     }
 
     private void Update()
@@ -433,7 +472,8 @@ public class AprilTagRoomLocalizer : MonoBehaviour
 
         // Due time from the current interval, so a change (e.g. to fast while a
         // new tag needs samples) applies at once, not after the old interval.
-        var wanted = armed || (continuousScan && Time.time >= lastScanRequestTime + scanIntervalSeconds);
+        var codeDue = ScanForRoomCode && Decoder != null && Time.time >= lastCodeAttemptTime + RoomCodeIntervalSeconds;
+        var wanted = armed || codeDue || (continuousScan && Time.time >= lastScanRequestTime + scanIntervalSeconds);
         if (!wanted)
         {
             return;
@@ -449,6 +489,11 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         frameRequestTimestamp = Stopwatch.GetTimestamp();
         frameRequestTime = Time.time;
         frameRotationSpeed = rotationSpeed;
+        decodeCodeThisFrame = codeDue;
+        if (codeDue)
+        {
+            lastCodeAttemptTime = Time.time;
+        }
         lastScanRequestTime = Time.time;
         if (!cameraSource.TryRequestFrame(onFrameCaptured))
         {
@@ -478,7 +523,8 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         var image = frame.Image;
         var intrinsics = pendingIntrinsics;
         var delivered = Stopwatch.GetTimestamp();
-        pendingDetection = Task.Run(() => Detect(image, intrinsics, delivered));
+        var decoder = decodeCodeThisFrame ? Decoder : null;
+        pendingDetection = Task.Run(() => Detect(image, intrinsics, delivered, decoder));
     }
 
     private readonly struct CameraTagSample
@@ -505,14 +551,33 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         public long DeliveredTimestamp;
         public double DetectMs;
         public double PoseMs;
+        public string RoomCode;
+        public double DecodeMs;
     }
 
     // Worker thread: detect, then estimate each known tag's pose relative to the
     // camera. Uses only the detector (never called concurrently) and read-only
     // state set up before detection started.
-    private DetectionResult Detect(ImageU8 image, PinholeIntrinsics intrinsics, long deliveredTimestamp)
+    private DetectionResult Detect(ImageU8 image, PinholeIntrinsics intrinsics, long deliveredTimestamp, IRoomCodeDecoder decoder)
     {
         var result = new DetectionResult { DeliveredTimestamp = deliveredTimestamp };
+        // The config as of this frame (ApplyConfig swaps these on the main thread).
+        var registry = tagRegistry;
+        var learnUnlisted = learnUnlistedTags;
+        var defaultSize = defaultTagSizeMeters;
+        if (decoder != null)
+        {
+            var decodeStart = Stopwatch.GetTimestamp();
+            try
+            {
+                result.RoomCode = decoder.Decode(image);
+            }
+            catch (Exception)
+            {
+                result.RoomCode = null;
+            }
+            result.DecodeMs = Milliseconds(decodeStart, Stopwatch.GetTimestamp());
+        }
         var start = Stopwatch.GetTimestamp();
         using var detections = detector.Detect(image);
         var detected = Stopwatch.GetTimestamp();
@@ -521,14 +586,14 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         for (var i = 0; i < detections.Length; i++)
         {
             ref var det = ref detections[i];
-            var listed = tagRegistry.TryGetValue(det.ID, out var known);
+            var listed = registry.TryGetValue(det.ID, out var known);
             // Unlisted tags only if the config asks for them, and only perfect
             // decodes (no corrected bit errors), to keep stray IDs out.
-            if (!listed && (!learnUnlistedTags || det.Hamming != 0))
+            if (!listed && (!learnUnlisted || det.Hamming != 0))
             {
                 continue;
             }
-            var sizeMeters = listed ? known.sizeMeters : defaultTagSizeMeters;
+            var sizeMeters = listed ? known.sizeMeters : defaultSize;
 
             // Only trust detections within the angular range we've actually
             // validated with ground-truth testing - accuracy degrades at steeper
@@ -587,6 +652,11 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         var start = Stopwatch.GetTimestamp();
         var result = task.Result;
         var frame = pendingFrame;
+        if (result.RoomCode != null)
+        {
+            Debug.Log($"[AprilTagRoomLocalizer] Room code read ({result.DecodeMs:F0} ms): {result.RoomCode}");
+            RoomCodeFound?.Invoke(result.RoomCode);
+        }
         var rejected = maxRotationSpeedDegreesPerSecond > 0f && frameRotationSpeed > maxRotationSpeedDegreesPerSecond;
         foreach (var sample in rejected ? new List<CameraTagSample>() : result.Samples)
         {
@@ -599,7 +669,10 @@ public class AprilTagRoomLocalizer : MonoBehaviour
                     sessionTagPosition, Quaternion.identity));
                 continue;
             }
-            var known = tagRegistry[sample.TagId];
+            if (!tagRegistry.TryGetValue(sample.TagId, out var known))
+            {
+                continue;   // the config changed since this frame was detected
+            }
 
             // Solve for the room origin's pose in this session's world space, given
             // this tag's known fixed pose in room coordinates and its just-detected

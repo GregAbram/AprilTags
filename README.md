@@ -98,6 +98,30 @@ for the measurements.
    phones and the editor).
 4. **Config:** `StreamingAssets/room_config.json` (see above).
 
+## Room codes (QR)
+
+Instead of building a config into every app, give the room a **QR code**:
+
+- The **survey** writes `room_code.txt` and `room_code.png` next to the saved
+  config (`RoomCodeImage.Save`). `SurveyScreenUI` also shows the code on screen,
+  so other phones can scan it directly. **Tools > AprilTags > Save Room Code
+  Image** makes one from a project's `StreamingAssets/room_config.json`. Print
+  it and post it in the room.
+- Apps with a **`RoomCodeReader`** scan for a code whenever they have no room,
+  or when `BeginScan()` is called (a "Scan room code" button). They read it
+  from the same camera frames as the tags, about once a second on the worker
+  thread. A new room is applied and **saved as the device's room**, so later
+  starts use it without scanning again. A code of the same survey, or a QR code
+  that isn't a room code, is ignored.
+- The code is compact text (`RoomCode`, about 30 characters per tag):
+  `TACCROOM1|<name>|<dataManager host:port>|<tag size>|<id>,<x>,<y>,<z>,<yaw>;...`.
+  The **survey ID** (`RoomCode.SurveyId`, six characters, shown on screen)
+  identifies the tag positions, so viewers can see at a glance that they're
+  using the same survey.
+- QR reading and drawing use [ZXing.Net](https://github.com/micjahn/ZXing.Net)
+  0.16.11 (Apache 2.0, bundled in `Runtime/RoomCode/Plugins` with its license),
+  in the `TaccAprilTags.RoomCode` assembly, which installs itself at startup.
+
 ## Room config reference
 
 ```json
