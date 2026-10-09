@@ -25,9 +25,19 @@ using UnityEngine;
 // disagreement by a measured or established tag means the tracking frame moved
 // (recenter, relocalization): the room is re-anchored. A learned tag that keeps
 // disagreeing is unlearned - it never moves the room.
+//
+// Survey mode (surveyMode) sets a room up: the first tag seen that has a pose in
+// the config becomes the anchor (or, with no tags in the config, the first tag
+// seen defines the room: its center is the origin and its facing sets the
+// axes); every other tag - listed or not - is learned relative to it, position
+// and yaw. SaveSurveyedConfig() then writes a room_config.json listing them all
+// as measured, so every device anchors from the same tag positions.
 public class RoomAnchor : MonoBehaviour
 {
     [SerializeField] private AprilTagRoomLocalizer localizer;
+
+    [Tooltip("Set up a room: anchor on the first configured tag seen, learn all others, then SaveSurveyedConfig().")]
+    [SerializeField] private bool surveyMode;
 
     [Tooltip("Keep scanning for tags in the background (no Acquire needed).")]
     [SerializeField] private bool scanContinuously = true;
@@ -48,6 +58,8 @@ public class RoomAnchor : MonoBehaviour
     [SerializeField] private float learnedTagWeight = 0.5f;
     [Tooltip("This many disagreeing sightings in a row unlearn a learned tag.")]
     [SerializeField] private int disagreementsToUnlearn = 10;
+    [Tooltip("Only learn tags mounted upright (normal within this many degrees of horizontal); a tag lying on a table is ignored.")]
+    [SerializeField] private float maxTagTiltDegrees = 30f;
     [SerializeField] private string learnedFileName = "learned_tags.json";
 
     [Header("Scan rate (seconds between frames)")]
@@ -104,6 +116,8 @@ public class RoomAnchor : MonoBehaviour
         public float x, y, z;
         public float weightSum;
         public int samples;
+        // Weighted sum of the tag's facing direction in room axes (x, z).
+        public float yawX, yawZ;
         [NonSerialized] public int disagreements;
         // Loaded from a saved survey: its position stays fixed, so devices
         // sharing the file keep identical tag positions.
@@ -112,6 +126,7 @@ public class RoomAnchor : MonoBehaviour
         [NonSerialized] public float rotationSpeedMax;
 
         public Vector3 Position => new(x, y, z);
+        public float YawDegrees => Mathf.Repeat(Mathf.Atan2(yawX, yawZ) * Mathf.Rad2Deg, 360f);
     }
 
     [Serializable]
@@ -132,6 +147,12 @@ public class RoomAnchor : MonoBehaviour
     private string lastLoggedState = "";
     private int lastLoggedCloseSightings = -1;
     private float lastDistanceLogTime = float.NegativeInfinity;
+    private int surveyAnchorId = -1;
+    private readonly HashSet<int> loggedNotUpright = new();
+
+    public bool SurveyMode => surveyMode;
+    // In survey mode, the tag that defines the room (-1 until one is seen).
+    public int SurveyAnchorId => surveyAnchorId;
 
     // Scans at full rate until a tag locks; its frames count like any others.
     public void Rescan()
@@ -150,6 +171,10 @@ public class RoomAnchor : MonoBehaviour
         IsAnchored = false;
         snapNext = true;
         lastLoggedCloseSightings = -1;
+        if (surveyMode)
+        {
+            surveyAnchorId = -1;
+        }
         Debug.Log("[RoomAnchor] Observations cleared; re-anchoring");
     }
 
@@ -168,12 +193,12 @@ public class RoomAnchor : MonoBehaviour
     {
         roomPosition = default;
         measured = false;
-        if (localizer != null && localizer.TryGetConfiguredTag(tagId, out var configured, out _, out measured) && measured)
+        if (TryGetAnchorPose(tagId, out var anchorPosition, out _))
         {
-            roomPosition = configured;
+            roomPosition = anchorPosition;
+            measured = true;
             return true;
         }
-        measured = false;
         if (learned.TryGetValue(tagId, out var tag) && tag.samples >= establishedSamples)
         {
             roomPosition = tag.Position;
@@ -193,7 +218,9 @@ public class RoomAnchor : MonoBehaviour
             var text = new StringBuilder();
             if (!IsLocalized)
             {
-                text.Append("Room: looking for a measured tag");
+                text.Append(!surveyMode ? "Room: looking for a measured tag"
+                    : localizer != null && localizer.ListedTagCount > 0 ? "Survey: look at the tag listed in room_config.json"
+                    : "Survey: look at any tag - it will define the room origin");
             }
             else if (!IsAnchored)
             {
@@ -221,7 +248,7 @@ public class RoomAnchor : MonoBehaviour
                 text.Append($"  tag {id}: ");
                 if (IsMeasured(id))
                 {
-                    text.Append("measured");
+                    text.Append(surveyMode ? "anchor" : "measured");
                 }
                 else if (tag != null && tag.samples >= establishedSamples)
                 {
@@ -247,7 +274,33 @@ public class RoomAnchor : MonoBehaviour
         }
     }
 
-    private bool IsMeasured(int tagId) => localizer != null && localizer.TryGetConfiguredTag(tagId, out _, out _, out var measured) && measured;
+    // Anchor tags place the room: the config's measured tags, or in survey mode
+    // the survey's anchor.
+    private bool IsMeasured(int tagId) => surveyMode
+        ? tagId == surveyAnchorId
+        : localizer != null && localizer.TryGetConfiguredTag(tagId, out _, out _, out var measured) && measured;
+
+    // An anchor tag's pose in room coordinates: from the config, or for a survey
+    // of a room the config lists no tags for, the origin.
+    private bool TryGetAnchorPose(int tagId, out Vector3 position, out Quaternion rotation)
+    {
+        position = Vector3.zero;
+        rotation = Quaternion.identity;
+        if (!IsMeasured(tagId))
+        {
+            return false;
+        }
+        localizer.TryGetConfiguredTag(tagId, out position, out rotation, out _);
+        return true;
+    }
+
+    // The room origin's (yaw-only) rotation implied by one sighting of an anchor
+    // tag: the room is the tag's world pose undone by its room pose.
+    private static Quaternion OriginRotationFrom(TagObservation o, Quaternion tagRoomRotation)
+    {
+        var relative = o.WorldRotation * Quaternion.Inverse(tagRoomRotation);
+        return Quaternion.LookRotation(Vector3.ProjectOnPlane(relative * Vector3.forward, Vector3.up), Vector3.up);
+    }
 
     private bool IsEstablished(int tagId) => learned.TryGetValue(tagId, out var tag) && tag.samples >= establishedSamples;
 
@@ -304,6 +357,19 @@ public class RoomAnchor : MonoBehaviour
     {
         if (!learnedLoaded && localizer.IsConfigLoaded)
         {
+            if (surveyMode)
+            {
+                // A survey learns every tag it sees, listed or not.
+                var size = localizer.DefaultTagSizeMeters;
+                if (size <= 0f && localizer.LoadedConfig.tags.Length > 0)
+                {
+                    size = localizer.LoadedConfig.tags[0].sizeMeters;
+                }
+                localizer.EnableUnlistedTags(size);
+                Debug.Log(size > 0f
+                    ? $"[RoomAnchor] Survey: learning every tag at {size * 100f:F2} cm; anchor = the first {(localizer.ListedTagCount > 0 ? "tag listed in the config" : "tag seen (it defines the room origin)")}"
+                    : "[RoomAnchor] Survey: the config gives no tag size (defaultTagSizeMeters) - unlisted tags can't be measured");
+            }
             LoadLearned();
         }
         if (learnedDirty && Time.time - lastSaveTime > 5f)
@@ -338,7 +404,12 @@ public class RoomAnchor : MonoBehaviour
         }
 
         var id = observation.TagId;
-        var isMeasured = observation.Measured;
+        if (surveyMode && surveyAnchorId < 0 && (observation.Listed || localizer.ListedTagCount == 0))
+        {
+            surveyAnchorId = id;
+            Debug.Log($"[RoomAnchor] Survey anchor: tag {id} ({(observation.Listed ? "pose from the config" : "defines the room origin")})");
+        }
+        var isMeasured = IsMeasured(id);
         var trusted = isMeasured || IsEstablished(id);
 
         if (!histories.TryGetValue(id, out var history))
@@ -401,9 +472,8 @@ public class RoomAnchor : MonoBehaviour
             {
                 continue;
             }
-            if (IsMeasured(id))
+            if (TryGetAnchorPose(id, out var roomPosition, out _))
             {
-                localizer.TryGetConfiguredTag(id, out var roomPosition, out _, out _);
                 correspondences.Add(new TagCorrespondence(id, roomPosition, h.MeanWorldPosition));
             }
             else if (IsEstablished(id))
@@ -442,9 +512,10 @@ public class RoomAnchor : MonoBehaviour
             // Not anchored: place from the measured tag seen closest, yaw from its
             // observations weighted toward close range; anchored once enough of
             // them are close.
-            var measured = histories.Where(h => h.Value.Observations.Count > 0 && IsMeasured(h.Key))
-                .OrderBy(h => h.Value.Observations.Average(o => o.Distance)).Select(h => h.Value).FirstOrDefault();
-            if (measured == null)
+            var anchorEntry = histories.Where(h => h.Value.Observations.Count > 0 && IsMeasured(h.Key))
+                .OrderBy(h => h.Value.Observations.Average(o => o.Distance)).FirstOrDefault();
+            var measured = anchorEntry.Value;
+            if (measured == null || !TryGetAnchorPose(anchorEntry.Key, out var tagRoomPosition, out var tagRoomRotation))
             {
                 return;
             }
@@ -455,17 +526,17 @@ public class RoomAnchor : MonoBehaviour
                 // Once anchoring, yaw from the close sightings only.
                 if (close < anchorSamples || o.Distance <= anchorMaxDistance)
                 {
-                    forward += o.OriginRotation * Vector3.forward / Mathf.Max(o.Distance * o.Distance, 0.01f);
+                    forward += OriginRotationFrom(o, tagRoomRotation) * Vector3.forward / Mathf.Max(o.Distance * o.Distance, 0.01f);
                 }
             }
             var rotation = Quaternion.LookRotation(Vector3.ProjectOnPlane(forward, Vector3.up), Vector3.up);
             LastFit = null;
-            SetTarget(measured.MeanWorldPosition - rotation * measured.Observations[0].TagRoomPosition, rotation);
+            SetTarget(measured.MeanWorldPosition - rotation * tagRoomPosition, rotation);
             LogAnchoringProgress(measured.Observations[^1], close);
             if (close >= anchorSamples)
             {
                 IsAnchored = true;
-                LogAnchoringSpread(measured.Observations.Where(o => o.Distance <= anchorMaxDistance).ToList(), rotation);
+                LogAnchoringSpread(measured.Observations.Where(o => o.Distance <= anchorMaxDistance).ToList(), rotation, tagRoomRotation);
             }
         }
 
@@ -496,6 +567,16 @@ public class RoomAnchor : MonoBehaviour
     // weighted toward close range (position error grows with distance).
     private void Learn(TagObservation observation)
     {
+        // Wall-mounted tags only: a tag lying on a table faces up.
+        var facing = Quaternion.Inverse(targetRotation) * observation.WorldRotation * Vector3.forward;
+        if (Mathf.Abs(facing.y) > Mathf.Sin(maxTagTiltDegrees * Mathf.Deg2Rad))
+        {
+            if (loggedNotUpright.Add(observation.TagId))
+            {
+                Debug.Log($"[RoomAnchor] Ignoring tag {observation.TagId}: not mounted upright (faces {Mathf.Asin(Mathf.Clamp(facing.y, -1f, 1f)) * Mathf.Rad2Deg:F0} deg from horizontal)");
+            }
+            return;
+        }
         var roomPosition = Quaternion.Inverse(targetRotation) * (observation.WorldPosition - targetPosition);
         var weight = 1f / Mathf.Max(observation.Distance * observation.Distance, 0.25f);
         if (!learned.TryGetValue(observation.TagId, out var tag))
@@ -524,13 +605,67 @@ public class RoomAnchor : MonoBehaviour
         (tag.x, tag.y, tag.z) = (position.x, position.y, position.z);
         tag.weightSum += weight;
         tag.samples++;
+        var flat = new Vector2(facing.x, facing.z).normalized * weight;
+        tag.yawX += flat.x;
+        tag.yawZ += flat.y;
         tag.rotationSpeedSum += observation.RotationSpeed;
         tag.rotationSpeedMax = Mathf.Max(tag.rotationSpeedMax, observation.RotationSpeed);
         learnedDirty = true;
         if (tag.samples == establishedSamples)
         {
-            Debug.Log($"[RoomAnchor] Learned tag {tag.id} at room ({position.x:F3}, {position.y:F3}, {position.z:F3}); turning {tag.rotationSpeedSum / tag.samples:F1} deg/s mean, {tag.rotationSpeedMax:F1} max over those sightings");
+            Debug.Log($"[RoomAnchor] Learned tag {tag.id} at room ({position.x:F3}, {position.y:F3}, {position.z:F3}), yaw {tag.YawDegrees:F1}; turning {tag.rotationSpeedSum / tag.samples:F1} deg/s mean, {tag.rotationSpeedMax:F1} max over those sightings");
         }
+    }
+
+    // The room as surveyed: the anchor tag plus every established learned tag,
+    // all marked measured, with the loaded config's room size and settings.
+    public RoomConfig BuildSurveyedConfig()
+    {
+        var loaded = localizer.LoadedConfig;
+        var tags = new List<TagPlacement>();
+        if (surveyAnchorId >= 0 && TryGetAnchorPose(surveyAnchorId, out var anchorPosition, out var anchorRotation))
+        {
+            tags.Add(new TagPlacement
+            {
+                id = surveyAnchorId, x = anchorPosition.x, y = anchorPosition.y, z = anchorPosition.z,
+                yawDegrees = Mathf.Repeat(anchorRotation.eulerAngles.y, 360f), sizeMeters = SizeOf(surveyAnchorId), measured = true,
+            });
+        }
+        foreach (var tag in learned.Values.Where(t => t.samples >= establishedSamples && t.id != surveyAnchorId))
+        {
+            tags.Add(new TagPlacement
+            {
+                id = tag.id, x = tag.x, y = tag.y, z = tag.z,
+                yawDegrees = tag.YawDegrees, sizeMeters = SizeOf(tag.id), measured = true,
+            });
+        }
+        return new RoomConfig
+        {
+            room = loaded?.room,
+            learnUnlistedTags = loaded?.learnUnlistedTags ?? true,
+            defaultTagSizeMeters = localizer.DefaultTagSizeMeters,
+            tags = tags.ToArray(),
+        };
+    }
+
+    private float SizeOf(int tagId) =>
+        localizer.TryGetConfiguredTagSize(tagId, out var size) ? size : localizer.DefaultTagSizeMeters;
+
+    // Writes the surveyed room to persistentDataPath under the config's name, where
+    // it overrides the bundled config on this device from the next start (the
+    // previous override is kept as .prev.json). Returns the path and tag count.
+    public (string path, int tags) SaveSurveyedConfig()
+    {
+        var config = BuildSurveyedConfig();
+        var path = Path.Combine(Application.persistentDataPath, localizer.ConfigFileName);
+        if (File.Exists(path))
+        {
+            File.Copy(path, Path.ChangeExtension(path, ".prev.json"), true);
+        }
+        var json = JsonUtility.ToJson(config, true);
+        File.WriteAllText(path, json);
+        Debug.Log($"[RoomAnchor] Survey saved: {config.tags.Length} tags to {path}\n{json}");
+        return (path, config.tags.Length);
     }
 
     private string LearnedPath => Path.Combine(Application.persistentDataPath, learnedFileName);
@@ -552,7 +687,7 @@ public class RoomAnchor : MonoBehaviour
             }
             foreach (var tag in file.tags)
             {
-                tag.frozen = tag.samples >= establishedSamples;
+                tag.frozen = !surveyMode && tag.samples >= establishedSamples;
                 learned[tag.id] = tag;
             }
             Debug.Log($"[RoomAnchor] Loaded {learned.Count} learned tag(s) from {LearnedPath}");
@@ -601,14 +736,14 @@ public class RoomAnchor : MonoBehaviour
     // How much the close frames that anchored the room disagree on its yaw, and
     // where the camera was relative to the tag (degrees off square horizontally,
     // above/below), to tell per-frame noise from viewpoint-dependent bias.
-    private void LogAnchoringSpread(List<TagObservation> close, Quaternion anchoredRotation)
+    private void LogAnchoringSpread(List<TagObservation> close, Quaternion anchoredRotation, Quaternion tagRotation)
     {
         var meanYaw = anchoredRotation.eulerAngles.y;
         float sq = 0f, min = float.MaxValue, max = float.MinValue;
         Vector3 view = Vector3.zero;
         foreach (var o in close)
         {
-            var d = Mathf.DeltaAngle(meanYaw, o.OriginRotation.eulerAngles.y);
+            var d = Mathf.DeltaAngle(meanYaw, OriginRotationFrom(o, tagRotation).eulerAngles.y);
             sq += d * d;
             min = Mathf.Min(min, d);
             max = Mathf.Max(max, d);
@@ -619,7 +754,6 @@ public class RoomAnchor : MonoBehaviour
         // Camera direction from the tag, in room axes, against the direction a
         // viewer faces the tag from (opposite its facing).
         var id = close[0].TagId;
-        localizer.TryGetConfiguredTag(id, out _, out var tagRotation, out _);
         var viewRoom = Quaternion.Inverse(anchoredRotation) * view;
         var square = -(tagRotation * Vector3.forward);
         var horizontal = Vector3.SignedAngle(Vector3.ProjectOnPlane(square, Vector3.up), Vector3.ProjectOnPlane(viewRoom, Vector3.up), Vector3.up);
