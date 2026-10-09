@@ -11,11 +11,24 @@ using ZXing.QrCode;
 // the package's room-code decoder and encoder.
 public static class ZXingRoomCode
 {
+    // Runs at startup; apps may also call it explicitly. Safe to call again.
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
     public static void Install()
     {
-        AprilTagRoomLocalizer.DefaultRoomCodeDecoder ??= new Decoder();
-        RoomCodeImage.Encoder ??= new Encoder();
+        if (AprilTagRoomLocalizer.DefaultRoomCodeDecoder != null && RoomCodeImage.Encoder != null)
+        {
+            return;
+        }
+        try
+        {
+            AprilTagRoomLocalizer.DefaultRoomCodeDecoder ??= new Decoder();
+            RoomCodeImage.Encoder ??= new Encoder();
+            Debug.Log("[ZXingRoomCode] QR room-code decoder and encoder installed");
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"[ZXingRoomCode] Couldn't install the QR decoder: {e}");
+        }
     }
 
     private sealed class Decoder : IRoomCodeDecoder

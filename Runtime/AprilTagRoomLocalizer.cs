@@ -237,6 +237,7 @@ public class AprilTagRoomLocalizer : MonoBehaviour
     private float lastCodeAttemptTime = float.NegativeInfinity;
     private bool decodeCodeThisFrame;
     private int codeAttempts;
+    private bool warnedNoDecoder;
 
     private IRoomCodeDecoder Decoder => RoomCodeDecoder ?? DefaultRoomCodeDecoder;
     private Task<DetectionResult> pendingDetection;
@@ -475,6 +476,11 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         // new tag needs samples) applies at once, not after the old interval.
         // Close focus while looking for a room code (autofocus on iPhone).
         cameraSource.CloseFocusRequested = ScanForRoomCode;
+        if (ScanForRoomCode && Decoder == null && !warnedNoDecoder)
+        {
+            warnedNoDecoder = true;
+            Debug.LogWarning("[AprilTagRoomLocalizer] Asked to scan for a room code, but no QR decoder is installed (TaccAprilTags.RoomCode / ZXingRoomCode.Install)");
+        }
         var codeDue = ScanForRoomCode && Decoder != null && Time.time >= lastCodeAttemptTime + RoomCodeIntervalSeconds;
         var wanted = armed || codeDue || (continuousScan && Time.time >= lastScanRequestTime + scanIntervalSeconds);
         if (!wanted)
