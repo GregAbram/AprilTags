@@ -26,8 +26,30 @@ public class ARFoundationCameraSource : AprilTagCameraSource
 
     // Autofocus changes the focal length (several percent on iPhone), which
     // biases distances and tag orientations; a fixed focus keeps it constant.
-    // Frames carry their own intrinsics either way.
+    // Frames carry their own intrinsics either way. Autofocus comes back on
+    // while close focus is requested (reading a QR code up close - the fixed
+    // focus suits the room, not something at arm's length).
     [SerializeField] private bool disableAutoFocus = true;
+
+    private bool closeFocusRequested;
+
+    public override bool CloseFocusRequested
+    {
+        get => closeFocusRequested;
+        set
+        {
+            if (value == closeFocusRequested)
+            {
+                return;
+            }
+            closeFocusRequested = value;
+            if (cameraManager != null && disableAutoFocus)
+            {
+                cameraManager.autoFocusRequested = value;
+                Debug.Log($"[ARFoundationCameraSource] Autofocus {(value ? "on (close focus for a QR code)" : "off (fixed focal length)")}");
+            }
+        }
+    }
 
     private ImageU8 image;
     private double lastFrameTimestamp = double.NaN;

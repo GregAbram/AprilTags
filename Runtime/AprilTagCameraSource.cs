@@ -52,6 +52,11 @@ public abstract class AprilTagCameraSource : MonoBehaviour
     // with true and the frame, or with false if the capture failed.
     public abstract bool TryRequestFrame(Action<bool, CameraFrame> onComplete);
 
+    // A request for focus suited to something close (e.g. reading a QR code); a
+    // camera with fixed or no adjustable focus ignores it. Frames carry their
+    // own intrinsics where focus moves the focal length.
+    public virtual bool CloseFocusRequested { get; set; }
+
     // Main-thread time (ms) this source spent turning the last delivered frame
     // into the grayscale image (copy, conversion); for the localizer's timing log.
     public double LastFramePrepareMilliseconds { get; protected set; }

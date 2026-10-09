@@ -236,6 +236,7 @@ public class AprilTagRoomLocalizer : MonoBehaviour
     private float lastScanRequestTime = float.NegativeInfinity;
     private float lastCodeAttemptTime = float.NegativeInfinity;
     private bool decodeCodeThisFrame;
+    private int codeAttempts;
 
     private IRoomCodeDecoder Decoder => RoomCodeDecoder ?? DefaultRoomCodeDecoder;
     private Task<DetectionResult> pendingDetection;
@@ -472,6 +473,8 @@ public class AprilTagRoomLocalizer : MonoBehaviour
 
         // Due time from the current interval, so a change (e.g. to fast while a
         // new tag needs samples) applies at once, not after the old interval.
+        // Close focus while looking for a room code (autofocus on iPhone).
+        cameraSource.CloseFocusRequested = ScanForRoomCode;
         var codeDue = ScanForRoomCode && Decoder != null && Time.time >= lastCodeAttemptTime + RoomCodeIntervalSeconds;
         var wanted = armed || codeDue || (continuousScan && Time.time >= lastScanRequestTime + scanIntervalSeconds);
         if (!wanted)
@@ -654,8 +657,13 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         var frame = pendingFrame;
         if (result.RoomCode != null)
         {
-            Debug.Log($"[AprilTagRoomLocalizer] Room code read ({result.DecodeMs:F0} ms): {result.RoomCode}");
+            Debug.Log($"[AprilTagRoomLocalizer] Room code read after {codeAttempts + 1} attempt(s) ({result.DecodeMs:F0} ms): {result.RoomCode}");
+            codeAttempts = 0;
             RoomCodeFound?.Invoke(result.RoomCode);
+        }
+        else if (result.DecodeMs > 0 && ++codeAttempts % 5 == 0)
+        {
+            Debug.Log($"[AprilTagRoomLocalizer] No room code in {codeAttempts} frames so far ({result.DecodeMs:F0} ms each) - hold the code steady, in focus, filling a good part of the view");
         }
         var rejected = maxRotationSpeedDegreesPerSecond > 0f && frameRotationSpeed > maxRotationSpeedDegreesPerSecond;
         foreach (var sample in rejected ? new List<CameraTagSample>() : result.Samples)
