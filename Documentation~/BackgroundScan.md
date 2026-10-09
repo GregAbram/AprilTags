@@ -7,7 +7,7 @@ places the room as soon as it sees one configured tag, and keeps refining
 ## Measurements (Quest 3, 2026-10-08)
 
 Per-frame cost while scanning, from `AprilTagRoomLocalizer`'s timing log
-(passthrough camera 1280×1280, `quadDecimate` 2, tagStandard41h12):
+(passthrough camera texture 1280×960, `quadDecimate` 2, tagStandard41h12):
 
 | Per frame | Mean | Max |
 |---|---|---|
@@ -92,9 +92,27 @@ anchor on different tags they disagree by those config errors. So:
 - Only measured or established tags can declare a tracking reset; a learned
   tag that keeps disagreeing (moved, or hand-held) is unlearned instead.
 
-## Open questions to measure next
+## Two-device findings (2026-10-08/09)
+
+- iPhone 11 timings: detect 40–110 ms per frame (1920×1440) on the worker,
+  main thread 0.2–0.5 ms per scanned frame.
+- Each device learning tags 7 and 9 independently from one anchor tag: Quest
+  repeated to 1.3–1.7 cm over three runs; iPhone spread 20–29 cm. Not motion
+  (rotation 0–7 deg/s, frames over 8 deg/s dropped); the iPhone's single-tag
+  yaw varies 1–2.6 deg between viewpoints while steady within each
+  (0.1–0.3 deg per frame). Autofocus moved its focal length up to 4%
+  (now off, per-frame intrinsics): 3.9 deg spread became 2.6. The rest is
+  most likely uncorrected lens distortion. Quest too varied ~1.5 deg between
+  distant viewpoints.
+- Hence: anchor only by fitting two or more tags' positions when the config
+  has them, survey once (on Quest), share the file. Quest and iPhone then
+  agreed on a reference post at the room center to a few cm.
+
+## Open questions
 
 - Coarser decimation for idle scans: 4 would cut detection ~4× but may lose
   tags at 2–3 m (a 9.4 cm tag is only ~20 px there).
-- iPhone 11 timings (not measured yet).
 - Drift rate on Quest and iPhone over minutes, to set the history age.
+- Correcting the iPhone's lens distortion (ARKit's per-device calibration via a
+  native plugin, or a one-time checkerboard calibration) would make
+  single-tag yaw, and iPhone surveys, more trustworthy.

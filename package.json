@@ -1,8 +1,8 @@
 {
   "name": "edu.tacc.apriltags",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "displayName": "TACC AprilTag Colocation",
-  "description": "Multi-user AR colocation using wall-mounted AprilTags and an externally-configured room coordinate system. The core has no platform SDK dependency; Meta Quest support compiles when the Meta MR Utility Kit is installed. See README for required manual prerequisites (edu.umn.cs.ivlab.apriltag).",
+  "description": "Multi-user AR colocation from wall-mounted AprilTags: devices anchor a shared room frame by fitting the positions of tags surveyed once into room_config.json. Platform-neutral core; iPhone (AR Foundation) and Meta Quest (MR Utility Kit) camera sources compile when those packages are present. Requires edu.umn.cs.ivlab.apriltag (see README).",
   "unity": "6000.1",
   "dependencies": {
     "com.unity.mathematics": "1.3.3"

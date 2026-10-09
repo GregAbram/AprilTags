@@ -1,3 +1,7 @@
+> **Historical (2026-10-05).** The README describes the current design (0.3.0: RoomAnchor, background
+> scanning, surveys); Documentation~/BackgroundScan.md has the measurements behind it. This note is kept
+> for the Quest bring-up history and conventions.
+
 # Handoff: AprilTag colocation — state as of 2026-10-05
 
 Context for continuing this work in a new session (written at the end of a long
