@@ -96,7 +96,9 @@ public class RoomCodeReader : MonoBehaviour
         }
         localizer.ScanForRoomCode = false;
         var surveyId = RoomCode.SurveyId(config);
-        if (localizer.IsConfigLoaded && RoomCode.SurveyId(localizer.LoadedConfig) == surveyId)
+        // Same tags, name and DataManager: nothing to do. A code that only renames
+        // the room or changes its DataManager still applies.
+        if (localizer.IsConfigLoaded && RoomCode.Encode(localizer.LoadedConfig) == RoomCode.Encode(config))
         {
             Debug.Log($"[RoomCodeReader] Already in this room (survey {surveyId})");
             return;
