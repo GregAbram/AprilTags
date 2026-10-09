@@ -120,7 +120,10 @@ Instead of building a config into every app, give the room a **QR code**:
   using the same survey.
 - QR reading and drawing use [ZXing.Net](https://github.com/micjahn/ZXing.Net)
   0.16.11 (Apache 2.0, bundled in `Runtime/RoomCode/Plugins` with its license),
-  in the `TaccAprilTags.RoomCode` assembly, which installs itself at startup.
+  in the `TaccAprilTags.RoomCode` assembly. **Call `ZXingRoomCode.Install()`
+  at app startup** (e.g. from a `[RuntimeInitializeOnLoadMethod]` in your own
+  code): its own startup hook didn't reliably run on device. It logs
+  "QR room-code decoder and encoder installed".
 
 ## Room config reference
 
