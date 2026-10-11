@@ -105,16 +105,17 @@ public static class AprilTagsSceneBuilder
         return parts;
     }
 
-    // A magenta post on the floor below the center of the measured tags
-    // (RoomReferenceMarker), 1.6 m tall with a crossbar at 1 m: every device
-    // should see it in the same place.
+    // A magenta post below the center of the measured tags, at room height 0
+    // (RoomReferenceMarker): the first surveyed tag's center height, so the
+    // crossbar is there and the 1.6 m post runs from 1 m below it to 0.6 m
+    // above. Every device should see it in the same place.
     public static void AddReferenceMarker(RoomAnchor anchor, Material material)
     {
         var marker = new GameObject("Reference Marker");
         marker.transform.SetParent(anchor.transform, false);
-        Bar(marker.transform, new Vector3(0f, 0.8f, 0f), new Vector3(0.03f, 1.6f, 0.03f), material);
-        Bar(marker.transform, new Vector3(0f, 1.0f, 0f), new Vector3(0.3f, 0.03f, 0.03f), material);
-        Bar(marker.transform, new Vector3(0f, 1.0f, 0f), new Vector3(0.03f, 0.03f, 0.3f), material);
+        Bar(marker.transform, new Vector3(0f, -0.2f, 0f), new Vector3(0.03f, 1.6f, 0.03f), material);
+        Bar(marker.transform, Vector3.zero, new Vector3(0.3f, 0.03f, 0.03f), material);
+        Bar(marker.transform, Vector3.zero, new Vector3(0.03f, 0.03f, 0.3f), material);
         var component = marker.AddComponent<RoomReferenceMarker>();
         SetField(component, "roomAnchor", anchor);
     }

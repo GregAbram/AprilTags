@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.1 - 2026-10-11
+
+- Reference post centered on room height 0 (crossbar there): in a surveyed
+  room that's the first tag's center, not the floor. Placed again when the
+  room changes (it stayed at the first room's spot).
+- Survey save message: one tag is enough.
+
 ## 0.5.0 - 2026-10-09
 
 App building blocks, so a Survey app, the Locator template and apps built on
