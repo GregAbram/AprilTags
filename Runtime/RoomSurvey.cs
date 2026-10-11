@@ -144,10 +144,9 @@ public class RoomSurvey : MonoBehaviour
         SavedConfig = roomAnchor.BuildSurveyedConfig();
         SavedCodeImage = RoomCodeImage.Save(SavedConfig);
         var roomName = string.IsNullOrEmpty(SavedConfig.name) ? "(unnamed)" : SavedConfig.name;
-        SaveMessage = tags < 2
-            ? $"Saved only {tags} tag - learn at least one more before using it."
-            : $"Saved {roomName}: {tags} tags, survey {RoomCode.SurveyId(SavedConfig)}, to {System.IO.Path.GetFileName(path)}" +
-              (SavedCodeImage != null ? " and room_code.png. Other devices scan the code shown here." : ".");
+        SaveMessage = $"Saved {roomName}: {tags} tag{(tags == 1 ? "" : "s")}, survey {RoomCode.SurveyId(SavedConfig)}, to {System.IO.Path.GetFileName(path)}" +
+                      (SavedCodeImage != null ? " and room_code.png." : ".") +
+                      (tags == 1 ? " One tag works; more make the room steadier and agree better between devices." : "");
         return true;
     }
 

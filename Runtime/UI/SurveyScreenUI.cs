@@ -162,7 +162,7 @@ public class SurveyScreenUI : MonoBehaviour
         var config = roomAnchor.BuildSurveyedConfig();
         codeImage = RoomCodeImage.Save(config);
         saveMessage = tags < 2
-            ? $"\nSaved only {tags} tag - learn at least one more before using it."
+            ? $"\nSaved {tags} tag. One tag works; more make the room steadier."
             : $"\nSaved {tags} tags (survey {RoomCode.SurveyId(config)}) to {System.IO.Path.GetFileName(path)}" +
               (codeImage != null ? " and room_code.png - scan the code on screen with the other devices." : ".");
     }
