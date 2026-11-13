@@ -196,6 +196,45 @@ off (on an angled wall) don't count. The origin stays at the first tag's
 center; the save message and log say how far the room was turned. Turn it off
 for a room whose walls aren't square.
 
+## Performance on Quest
+
+Apps on this package put content in the real room, so people walk up to it and
+through it, and it often fills the view. On Quest that's expensive in two ways:
+
+- **MSAA.** The Quest GPU renders each eye in tiles, and a mesh that fills the
+  view is processed once per tile. With 4x MSAA an eye is about four times as
+  many tiles (45 at 1344x1408), so dense data took 40-60 ms a frame instead of
+  about 5.
+- **Dynamic resolution.** Meta's default lets a Quest 3 supersample up to 1.6x
+  when the GPU is idle. When heavy content comes into view, the first frames
+  are far too slow, and it takes several seconds to scale down: a judder after
+  every move.
+
+So the Quest setup applies `AprilTagsAppInfo` settings on **every Quest build**,
+after Meta's Project Setup fixes (whose own MSAA fix, 4x, it skips):
+
+| Setting | Default | Where |
+|---|---|---|
+| `QuestMsaa` | 1 (off) | Android's quality level and its URP asset |
+| `QuestShadows` | false | the same URP asset (main-light shadows) |
+| `QuestMaxResolutionScale` | 1.0 | `OVRManager` in scenes the setup creates |
+
+Set them in your app's `AprilTagsAppInfo` to change them. Scenes are never
+modified once they exist, so an existing scene keeps its resolution limit; set
+**Quest 3 / Quest 2 Max Dynamic Resolution Scale** on its `OVRManager` by hand.
+At startup the Quest controls log `[QuestRendering]` with the MSAA and
+resolution limit in use, and warn if either is set to the expensive side.
+
+To see what the GPU is doing, with the headset connected:
+
+```bash
+adb logcat -s VrApi                      # per second: FPS, App= GPU ms, GPU%, SF= resolution scale
+adb shell ovrgpuprofiler -r              # vertices and fragments shaded, memory bus
+adb shell ovrgpuprofiler -e              # then restart the app, and:
+adb shell ovrgpuprofiler -t 0.3          # render passes: size, MSAA, tiles, ms each
+adb shell ovrgpuprofiler -d              # detailed mode off again
+```
+
 ## Room config reference
 
 ```json

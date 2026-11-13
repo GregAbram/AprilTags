@@ -43,6 +43,7 @@ public static class AprilTagsQuestSetup
         ConfigurePlayer(app);
         ConfigureXR();
         ApplyMetaProjectSetupFixes();
+        ConfigureRendering(app);   // after Meta's fixes, so the app's settings win
         foreach (var path in app.QuestScenes)
         {
             CreateSceneIfMissing(app, path, addContent);
@@ -123,6 +124,60 @@ public static class AprilTagsQuestSetup
         var missing = OpenXRFeatures.Except(enabled).ToList();
         Debug.Log($"[AprilTagsQuestSetup] OpenXR Android features enabled: {string.Join(", ", enabled)}" +
                   (missing.Count > 0 ? $"; NOT FOUND: {string.Join(", ", missing)}" : ""));
+    }
+
+    // MSAA and shadows for Android: the quality level Android uses by default,
+    // and its render pipeline asset (or the project's default one). Through
+    // serialized properties, so the package needs no URP reference.
+    private static void ConfigureRendering(AprilTagsAppInfo app)
+    {
+        var msaa = app.QuestMsaa >= 4 ? 4 : app.QuestMsaa >= 2 ? 2 : 1;
+        var quality = new SerializedObject(AssetDatabase.LoadAllAssetsAtPath("ProjectSettings/QualitySettings.asset")[0]);
+        var level = -1;
+        var defaults = quality.FindProperty("m_PerPlatformDefaultQuality");
+        for (var i = 0; defaults != null && i < defaults.arraySize; i++)
+        {
+            var entry = defaults.GetArrayElementAtIndex(i);
+            if (entry.FindPropertyRelative("first")?.stringValue == "Android")
+            {
+                level = entry.FindPropertyRelative("second").intValue;
+            }
+        }
+        var levels = quality.FindProperty("m_QualitySettings");
+        UnityEngine.Object pipeline = GraphicsSettings.defaultRenderPipeline;
+        var levelName = "(default)";
+        if (levels != null && level >= 0 && level < levels.arraySize)
+        {
+            var settings = levels.GetArrayElementAtIndex(level);
+            levelName = settings.FindPropertyRelative("name").stringValue;
+            settings.FindPropertyRelative("antiAliasing").intValue = msaa > 1 ? msaa : 0;
+            var custom = settings.FindPropertyRelative("customRenderPipeline").objectReferenceValue;
+            if (custom != null)
+            {
+                pipeline = custom;
+            }
+            quality.ApplyModifiedPropertiesWithoutUndo();
+        }
+        if (pipeline == null)
+        {
+            Debug.LogWarning("[AprilTagsQuestSetup] No render pipeline asset for Android; MSAA and shadows not set");
+            return;
+        }
+        var urp = new SerializedObject(pipeline);
+        var msaaProp = urp.FindProperty("m_MSAA");
+        var shadows = urp.FindProperty("m_MainLightShadowsSupported");
+        if (msaaProp != null)
+        {
+            msaaProp.intValue = msaa;
+        }
+        if (shadows != null)
+        {
+            shadows.boolValue = app.QuestShadows;
+        }
+        urp.ApplyModifiedPropertiesWithoutUndo();
+        EditorUtility.SetDirty(pipeline);
+        Debug.Log($"[AprilTagsQuestSetup] Quest rendering: quality level '{levelName}', {pipeline.name}: " +
+                  $"MSAA {(msaa > 1 ? msaa + "x" : "off")}, main-light shadows {(app.QuestShadows ? "on" : "off")}");
     }
 
     // Meta's Project Setup Tool fixes (its "Fix All"), Required + Recommended
@@ -211,6 +266,14 @@ public static class AprilTagsQuestSetup
         ovrManager.isInsightPassthroughEnabled = true;
         var managerSo = new SerializedObject(ovrManager);
         managerSo.FindProperty("requestPassthroughCameraAccessPermissionOnStartup").boolValue = true;
+        foreach (var name in new[] { "quest2MaxDynamicResolutionScale", "quest3MaxDynamicResolutionScale" })
+        {
+            var max = managerSo.FindProperty(name);
+            if (max != null)
+            {
+                max.floatValue = app.QuestMaxResolutionScale;
+            }
+        }
         managerSo.ApplyModifiedPropertiesWithoutUndo();
         rig.AddComponent<OVRPassthroughLayer>();   // always an underlay as of SDK 207
         var centerEye = rig.transform.Find("TrackingSpace/CenterEyeAnchor");

@@ -19,6 +19,17 @@ public class AprilTagsAppInfo
     public string[] IPhoneScenes = Array.Empty<string>();
     public string[] QuestScenes = Array.Empty<string>();
     public string IOSBuildPath = "Builds/iOS";
+
+    // Quest rendering, applied on every Quest build (README: Performance on
+    // Quest). MSAA: 1 = off, or 2 or 4. With 4x each eye renders as about four
+    // times as many tiles, and a mesh filling the view is drawn once per tile.
+    public int QuestMsaa = 1;
+    // Main-light shadows. In passthrough AR nothing but the app's own content
+    // receives them, and every shadow-casting mesh is drawn again for them.
+    public bool QuestShadows = false;
+    // Upper limit of Meta's dynamic resolution, set in scenes the setup
+    // creates (Meta's default lets Quest 3 supersample up to 1.6x).
+    public float QuestMaxResolutionScale = 1f;
     public string ApkPath => $"Builds/Quest/{ProductName.Replace(" ", "")}.apk";
 }
 

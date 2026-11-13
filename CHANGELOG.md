@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.0 - 2026-11-13
+
+- Quest rendering defaults for apps on the package (README: Performance on
+  Quest): `AprilTagsAppInfo.QuestMsaa` (default off) and `QuestShadows`
+  (default off) are applied to Android's quality level and URP asset on every
+  Quest build; `QuestMaxResolutionScale` (default 1.0) caps Meta's dynamic
+  resolution in scenes the setup creates.
+- Quest controls log `[QuestRendering]` at startup, and warn about MSAA or
+  dynamic resolution above 1.0.
+
 ## 0.6.0 - 2026-11-12
 
 - Quest: one room per headset. A survey saved on a Quest is also written to

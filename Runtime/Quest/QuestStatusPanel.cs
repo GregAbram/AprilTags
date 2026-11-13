@@ -28,5 +28,38 @@ public static class QuestStatusPanel
 
     // Plain log lines without stack traces: on device they fill the log buffer
     // and push out the lines worth reading. Warnings and errors keep theirs.
-    public static void QuietLogs() => Application.SetStackTraceLogType(LogType.Log, StackTraceLogType.None);
+    public static void QuietLogs()
+    {
+        Application.SetStackTraceLogType(LogType.Log, StackTraceLogType.None);
+        CheckRendering();
+    }
+
+    // Logs the settings that decide whether dense content stays at full frame
+    // rate, and warns about the two that cost the most (README: Performance on
+    // Quest). Once per run.
+    private static bool renderingChecked;
+
+    public static void CheckRendering()
+    {
+        if (renderingChecked)
+        {
+            return;
+        }
+        renderingChecked = true;
+        var msaa = QualitySettings.antiAliasing;
+        var manager = Object.FindAnyObjectByType<OVRManager>();
+        var max = manager != null ? Mathf.Max(manager.quest3MaxDynamicResolutionScale, manager.quest2MaxDynamicResolutionScale) : 1f;
+        Debug.Log($"[QuestRendering] MSAA {(msaa > 1 ? msaa + "x" : "off")}, dynamic resolution " +
+                  $"{(manager != null && manager.enableDynamicResolution ? $"up to {max:0.##}x" : "off")}");
+        if (msaa > 1)
+        {
+            Debug.LogWarning($"[QuestRendering] MSAA {msaa}x: content that fills the view is drawn once per tile, about {msaa}x as many; " +
+                             "expect dropped frames with dense meshes. The AprilTags Quest build sets it from AprilTagsAppInfo.QuestMsaa.");
+        }
+        if (manager != null && manager.enableDynamicResolution && max > 1f)
+        {
+            Debug.LogWarning($"[QuestRendering] Dynamic resolution may supersample up to {max:0.##}x, so heavy content judders until " +
+                             "it scales down. Set OVRManager's Quest 3 / Quest 2 Max Dynamic Resolution Scale to 1 or less.");
+        }
+    }
 }
