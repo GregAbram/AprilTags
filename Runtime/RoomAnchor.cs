@@ -64,10 +64,18 @@ public class RoomAnchor : MonoBehaviour
     [SerializeField] private float maxTagTiltDegrees = 30f;
     [SerializeField] private string learnedFileName = "learned_tags.json";
 
+    [Header("Saving a survey")]
+    [Tooltip("Turn the saved room so its axes run along the walls. Tags hang on walls, so in a room square to its walls every tag's yaw is a multiple of 90 deg; the room is turned by the learned tags' average departure from that. This corrects the error in the first tag's yaw, which sets the room's axes.")]
+    [SerializeField] private bool snapToWalls = true;
+    [Tooltip("Tags further than this from a multiple of 90 deg (on an angled wall) don't count toward the snap.")]
+    [SerializeField] private float snapToleranceDegrees = 15f;
+
     [Header("Scan rate (seconds between frames)")]
     [SerializeField] private float fastScanInterval = 0f;
     [SerializeField] private float scanInterval = 0.5f;
     [SerializeField] private float anchoredScanInterval = 3f;
+    [Tooltip("At most this many frames a second, however short the intervals above: each one is read back from the GPU, and reading every frame made the headset drop frames.")]
+    [SerializeField] private float maxScansPerSecond = 10f;
 
     [Header("Observations")]
     [Tooltip("Most recent observations kept per tag for placing the room.")]
@@ -653,6 +661,12 @@ public class RoomAnchor : MonoBehaviour
 
     // The room as surveyed: the anchor tag plus every established learned tag,
     // all marked measured, with the loaded config's room size and settings.
+    // The turn about the room's origin (degrees) that the last
+    // BuildSurveyedConfig applied to snap to the walls, and how many tags it
+    // was taken from (0: no snap).
+    public float LastSnapDegrees { get; private set; }
+    public int LastSnapTags { get; private set; }
+
     public RoomConfig BuildSurveyedConfig()
     {
         var loaded = localizer.LoadedConfig;
@@ -673,6 +687,10 @@ public class RoomAnchor : MonoBehaviour
                 yawDegrees = tag.YawDegrees, sizeMeters = SizeOf(tag.id), measured = true,
             });
         }
+        if (snapToWalls)
+        {
+            SnapToWalls(tags);
+        }
         return new RoomConfig
         {
             name = loaded?.name,
@@ -682,6 +700,47 @@ public class RoomAnchor : MonoBehaviour
             defaultTagSizeMeters = localizer.DefaultTagSizeMeters,
             tags = tags.ToArray(),
         };
+    }
+
+    // Turns the tags about the room's origin so their yaws sit on multiples of
+    // 90 deg, by the average departure of the learned tags. The anchor tag
+    // doesn't count: its yaw defines the room's axes, so it's 0 by
+    // construction, and its error shows up in every other tag instead.
+    private void SnapToWalls(List<TagPlacement> tags)
+    {
+        LastSnapDegrees = 0f;
+        LastSnapTags = 0;
+        var sum = 0f;
+        foreach (var tag in tags)
+        {
+            if (tag.id == surveyAnchorId)
+            {
+                continue;
+            }
+            var off = Mathf.DeltaAngle(90f * Mathf.Round(tag.yawDegrees / 90f), tag.yawDegrees);
+            if (Mathf.Abs(off) <= snapToleranceDegrees)
+            {
+                sum += off;
+                LastSnapTags++;
+            }
+        }
+        if (LastSnapTags == 0)
+        {
+            Debug.Log("[RoomAnchor] Not snapped to the walls: no learned tag to take the walls' direction from");
+            return;
+        }
+        var turn = sum / LastSnapTags;
+        var rotation = Quaternion.Euler(0f, -turn, 0f);
+        foreach (var tag in tags)
+        {
+            var position = rotation * new Vector3(tag.x, tag.y, tag.z);
+            tag.x = position.x;
+            tag.y = position.y;
+            tag.z = position.z;
+            tag.yawDegrees = Mathf.Repeat(tag.yawDegrees - turn, 360f);
+        }
+        LastSnapDegrees = turn;
+        Debug.Log($"[RoomAnchor] Snapped to the walls: room turned {-turn:F2} deg about its origin, from {LastSnapTags} learned tag(s)");
     }
 
     private float SizeOf(int tagId) =>
@@ -831,7 +890,8 @@ public class RoomAnchor : MonoBehaviour
         var needsSamples = histories.Any(h =>
             h.Value.Observations.Count > 0 && h.Value.Observations[^1].Time >= recent &&
             (IsMeasured(h.Key) ? !IsAnchored : IsAnchored && !IsEstablished(h.Key)));
-        localizer.ScanIntervalSeconds = needsSamples ? fastScanInterval : IsAnchored ? anchoredScanInterval : scanInterval;
+        var interval = needsSamples ? fastScanInterval : IsAnchored ? anchoredScanInterval : scanInterval;
+        localizer.ScanIntervalSeconds = maxScansPerSecond > 0f ? Mathf.Max(interval, 1f / maxScansPerSecond) : interval;
     }
 
     private void SetChildrenActive(bool active)

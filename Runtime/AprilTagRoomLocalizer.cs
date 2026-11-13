@@ -349,6 +349,21 @@ public class AprilTagRoomLocalizer : MonoBehaviour
         var overridePath = Path.Combine(Application.persistentDataPath, configFileName);
         string json = null;
 
+        // Quest: the room last surveyed on this headset, when it's newer than
+        // this app's own (SharedRoom). It becomes this app's room.
+        if (SharedRoom.TryRead(out var shared, out var sharedWritten))
+        {
+            var own = File.Exists(overridePath) ? File.GetLastWriteTimeUtc(overridePath) : DateTime.MinValue;
+            if (sharedWritten > own)
+            {
+                SaveConfigOverride(shared);
+                Debug.Log($"[AprilTagRoomLocalizer] Using the headset's surveyed room (survey {RoomCode.SurveyId(shared)}) from {SharedRoom.ConfigPath}");
+                ApplyConfig(shared, SharedRoom.ConfigPath);
+                yield break;
+            }
+            Debug.Log($"[AprilTagRoomLocalizer] The headset's surveyed room (survey {RoomCode.SurveyId(shared)}) is older than this app's own room; keeping this app's");
+        }
+
         if (File.Exists(overridePath))
         {
             json = File.ReadAllText(overridePath);

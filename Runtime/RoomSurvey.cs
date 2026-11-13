@@ -132,7 +132,9 @@ public class RoomSurvey : MonoBehaviour
     }
 
     // Writes room_config.json and the room code (room_code.png/.txt) to
-    // persistentDataPath. Returns false when there's nothing to save yet.
+    // persistentDataPath, and on Quest also to SharedRoom.Folder, where the
+    // other apps on the headset pick the room up. Returns false when there's
+    // nothing to save yet.
     public bool Save()
     {
         if (!roomAnchor.IsAnchored)
@@ -146,7 +148,14 @@ public class RoomSurvey : MonoBehaviour
         var roomName = string.IsNullOrEmpty(SavedConfig.name) ? "(unnamed)" : SavedConfig.name;
         SaveMessage = $"Saved {roomName}: {tags} tag{(tags == 1 ? "" : "s")}, survey {RoomCode.SurveyId(SavedConfig)}, to {System.IO.Path.GetFileName(path)}" +
                       (SavedCodeImage != null ? " and room_code.png." : ".") +
+                      (roomAnchor.LastSnapTags > 0 ? $" Turned {-roomAnchor.LastSnapDegrees:F1} deg to the walls." : "") +
                       (tags == 1 ? " One tag works; more make the room steadier and agree better between devices." : "");
+        if (SharedRoom.Supported)
+        {
+            SaveMessage += SharedRoom.TryWrite(SavedConfig, SavedCodeImage, out var error)
+                ? " Shared with the other apps on this headset."
+                : $" Not shared with the other apps: {error}.";
+        }
         return true;
     }
 

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.6.0 - 2026-11-12
+
+- Quest: one room per headset. A survey saved on a Quest is also written to
+  `/sdcard/AprilTags` (`SharedRoom`), and every app on the package takes it at
+  startup when it's newer than its own room, so no room code needs scanning in
+  each app. Needs All files access, declared by the Quest build
+  (`AprilTagsAllFilesAccess`) and granted with adb.
+- Surveys are saved square to the walls (`RoomAnchor` Snap To Walls, on by
+  default): the room is turned about its origin by the learned tags' average
+  departure from a multiple of 90°, correcting the first tag's yaw error.
+- Quest: scanning no longer makes the headset drop frames. The camera frame is
+  copied to one channel on the GPU before it's read back (a quarter of the
+  RGBA readback, with no CPU conversion), and `RoomAnchor` scans at most 10
+  frames a second (`maxScansPerSecond`).
+- Quest setup no longer applies Meta's recommended 4x MSAA with its other
+  Project Setup fixes; MSAA is left to the project's URP asset. With 4x, a
+  dense mesh filling the view cost 40-60 ms a frame (each eye splits into 45
+  tiles, and the mesh is drawn once per tile).
+
 ## 0.5.1 - 2026-10-11
 
 - Reference post centered on room height 0 (crossbar there): in a surveyed

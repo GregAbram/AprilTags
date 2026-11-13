@@ -162,6 +162,40 @@ Instead of building a config into every app, give the room a **QR code**:
   code): its own startup hook didn't reliably run on device. It logs
   "QR room-code decoder and encoder installed".
 
+## One room per headset (Quest)
+
+On a Quest, a survey saved there is also written to `/sdcard/AprilTags`
+(`SharedRoom`): `room_config.json`, `room_code.txt` and `room_code.png`. At
+startup, every app on this package takes that room when it's newer than its own
+saved room, and saves it as its own. So you survey once, then go from app to
+app with no room code to scan. A room code scanned in an app afterwards is
+newer, and wins in that app until the next survey is saved. iPhones can't share
+files between apps this way, and still scan the code.
+
+Reading and writing `/sdcard/AprilTags` needs **All files access**. The Quest
+build declares it (`AprilTagsAllFilesAccess`); grant it once per app, and again
+after installing an app afresh:
+
+```bash
+adb shell appops set edu.utexas.tacc.survey MANAGE_EXTERNAL_STORAGE allow
+adb shell appops set <app id> MANAGE_EXTERNAL_STORAGE allow
+```
+
+An app without it logs how to grant it, and Survey's save message says the
+room wasn't shared.
+
+## Square to the walls
+
+The first tag's measured yaw sets the room's axes, and is off by 0.3° (Quest,
+up close) to a few degrees, which turns the whole room against the walls. Tags
+hang on walls, so in a room square to its walls every tag faces along an axis.
+When a survey is saved, `RoomAnchor` (**Snap To Walls**, on by default) turns
+the room about its origin by the learned tags' average departure from a
+multiple of 90°, which averages out the first tag's error. Tags more than 15°
+off (on an angled wall) don't count. The origin stays at the first tag's
+center; the save message and log say how far the room was turned. Turn it off
+for a room whose walls aren't square.
+
 ## Room config reference
 
 ```json

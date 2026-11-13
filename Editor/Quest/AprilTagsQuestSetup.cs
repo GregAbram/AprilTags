@@ -128,6 +128,11 @@ public static class AprilTagsQuestSetup
     // Meta's Project Setup Tool fixes (its "Fix All"), Required + Recommended
     // only; Optional ones turn on features these apps don't use. The fixer API
     // is internal, hence reflection. Android only.
+    //
+    // Except MSAA: Meta recommends 4x, which on Quest splits each eye into
+    // about four times as many tiles, and a mesh that fills the view is drawn
+    // once per tile. For dense scientific geometry (PVAR) that cost 40-60 ms a
+    // frame, so MSAA is left to the project's own URP asset.
     public static void ApplyMetaProjectSetupFixes()
     {
         var setupType = typeof(OVRProjectSetup);
@@ -144,7 +149,7 @@ public static class AprilTagsQuestSetup
         var filter = typeof(AprilTagsQuestSetup)
             .GetMethod(nameof(MakeFilter), BindingFlags.Static | BindingFlags.NonPublic)
             .MakeGenericMethod(taskType)
-            .Invoke(null, new object[] { (Func<object, bool>)(task => GetTaskLevel(task, target) >= 1) });
+            .Invoke(null, new object[] { (Func<object, bool>)(task => GetTaskLevel(task, target) >= 1 && !IsMsaaTask(task, target)) });
 
         // (target, filter, log level, blocking, onCompleted); later SDKs add
         // optional parameters, which get their defaults.
@@ -164,6 +169,22 @@ public static class AprilTagsQuestSetup
 
     private static Func<IEnumerable<T>, List<T>> MakeFilter<T>(Func<object, bool> keep) =>
         tasks => tasks.Where(task => keep(task)).ToList();
+
+    // Meta's MSAA task, recognised by its message ("...MSAA...").
+    private static bool IsMsaaTask(object task, BuildTargetGroup target)
+    {
+        foreach (var name in new[] { "Message", "FixMessage" })
+        {
+            var prop = task.GetType().GetProperty(name)?.GetValue(task);
+            var text = prop?.GetType().GetMethod("GetValue", new[] { typeof(BuildTargetGroup) })?.Invoke(prop, new object[] { target }) as string
+                       ?? prop as string;
+            if (text != null && text.IndexOf("MSAA", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
 
     private static int GetTaskLevel(object task, BuildTargetGroup target)
     {
