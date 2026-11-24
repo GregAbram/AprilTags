@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.1 - 2026-11-23
+
+- `QuestRoomControls.ForgetLearnedOnX` (default on): an app that wants X for
+  itself turns it off, and `XHint` sets what the status shows for X instead
+  (PVAR uses X for push-to-talk).
+
 ## 0.7.0 - 2026-11-13
 
 - Quest rendering defaults for apps on the package (README: Performance on

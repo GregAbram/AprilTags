@@ -6,7 +6,8 @@ using UnityEngine.SceneManagement;
 // B = forget this session's observations (re-anchor), X = forget learned tag
 // positions, left trigger = scan a room code (QR), Y = switch scene (when one
 // is set). The status floats in front of the headset; a firm pulse when the
-// room becomes anchored.
+// room becomes anchored. An app that wants X for itself (PVAR's push-to-talk)
+// sets ForgetLearnedOnX = false and, optionally, XHint.
 public class QuestRoomControls : MonoBehaviour
 {
     [SerializeField] private RoomAnchor roomAnchor;
@@ -18,6 +19,13 @@ public class QuestRoomControls : MonoBehaviour
     [SerializeField] private string otherSceneName = "";
     [Tooltip("Shown above the controls, e.g. the app's name.")]
     [SerializeField] private string title = "";
+    [Tooltip("X forgets learned tag positions. Turn off when the app uses X for something else.")]
+    [SerializeField] private bool forgetLearnedOnX = true;
+
+    public bool ForgetLearnedOnX { get => forgetLearnedOnX; set => forgetLearnedOnX = value; }
+
+    // What the status shows for X when ForgetLearnedOnX is off, e.g. "X: talk"; empty = nothing.
+    public string XHint { get; set; } = "";
 
     private bool wasProvisional = true;
 
@@ -39,7 +47,7 @@ public class QuestRoomControls : MonoBehaviour
             roomAnchor.ClearTags();
             StartCoroutine(QuestStatusPanel.Pulse(0.3f, 0.05f));
         }
-        if (OVRInput.GetDown(OVRInput.Button.Three))
+        if (forgetLearnedOnX && OVRInput.GetDown(OVRInput.Button.Three))
         {
             roomAnchor.ForgetLearnedTags();
             StartCoroutine(QuestStatusPanel.Pulse(0.3f, 0.05f));
@@ -62,7 +70,8 @@ public class QuestRoomControls : MonoBehaviour
         }
 
         statusText.text = (string.IsNullOrEmpty(title) ? "" : title + "\n") +
-                          "A: scan now   B: re-anchor   X: forget learned" +
+                          "A: scan now   B: re-anchor" +
+                          (forgetLearnedOnX ? "   X: forget learned" : string.IsNullOrEmpty(XHint) ? "" : "   " + XHint) +
                           (roomCodeReader != null ? "   L trigger: room code" : "") +
                           (string.IsNullOrEmpty(otherSceneName) ? "" : "   Y: other scene") + "\n" +
                           (roomCodeReader != null ? roomCodeReader.StatusLine + "\n" : "") + roomAnchor.StatusText;
