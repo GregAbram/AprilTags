@@ -52,6 +52,18 @@ for the measurements.
    ```
    Or list no tags at all: the first tag the survey sees then defines the room
    (its center is the origin, its facing sets the axes).
+
+   With apps that place content in a **virtual room** (PVAR and ABRAR put
+   their data at a fixed spot in room coordinates), the reference tag is what
+   ties the physical room to the virtual one, so measure it in the virtual
+   room's frame, for example from the floor below it. On Quest, a new survey
+   in the Survey app starts from `/sdcard/AprilTags/room_base.json` (elsewhere
+   `room_base.json` in the app's persistentDataPath), a config in this format
+   holding the reference tag(s); without one, the first tag defines the room,
+   and content placed in a virtual room lands somewhere else:
+   ```bash
+   adb push room_base.json /sdcard/AprilTags/room_base.json
+   ```
 4. **Survey with a Quest 3** (more consistent than a phone; see accuracy notes):
    in a scene with a `RoomAnchor` in **survey mode**, walk within ~1 m of the
    configured tag until anchored, then look at every other tag until each
@@ -190,10 +202,13 @@ The first tag's measured yaw sets the room's axes, and is off by 0.3° (Quest,
 up close) to a few degrees, which turns the whole room against the walls. Tags
 hang on walls, so in a room square to its walls every tag faces along an axis.
 When a survey is saved, `RoomAnchor` (**Snap To Walls**, on by default) turns
-the room about its origin by the learned tags' average departure from a
-multiple of 90°, which averages out the first tag's error. Tags more than 15°
-off (on an angled wall) don't count. The origin stays at the first tag's
-center; the save message and log say how far the room was turned. Turn it off
+the learned tags about the anchor tag by their average departure from a
+multiple of 90°, which averages out the error in sighting the anchor. Tags
+more than 15° off (on an angled wall) don't count. The anchor tag keeps its
+pose: the virtual room's reference tag stays where `room_base.json` puts it
+(so the virtual room's axes must run along the walls, with the reference tag's
+yaw a multiple of 90°), and a first-tag survey keeps its origin. The save
+message and log say how far the tags were turned. Turn it off
 for a room whose walls aren't square.
 
 ## Performance on Quest

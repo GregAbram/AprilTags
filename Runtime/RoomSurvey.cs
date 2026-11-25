@@ -5,10 +5,16 @@ using UnityEngine;
 // name, the printed tag size and an optional DataManager address (kept between
 // runs), starting a new survey, and saving the result with its room code.
 //
-// With no room config on the device, a new survey starts at once: no tags
-// listed, every tag learned at TagSizeMeters, and the first one seen defines
-// the room. A survey saved earlier (room_config.json in persistentDataPath)
-// loads instead, so the next run extends it; NewSurvey() starts from nothing.
+// With no room config on the device, a new survey starts at once. A survey
+// saved earlier (room_config.json in persistentDataPath) loads instead, so the
+// next run extends it; NewSurvey() starts again.
+//
+// A new survey starts from the virtual room's reference tags, when there are
+// any (SharedRoom.BasePath, room_base.json): tags placed in the virtual room's
+// frame, such as one hand-measured from the floor. The survey anchors on one
+// of them and learns the rest in that frame, so content placed in the virtual
+// room lands where it was meant to. Without a base, the first tag seen defines
+// the room (its center is the origin).
 public class RoomSurvey : MonoBehaviour
 {
     [SerializeField] private RoomAnchor roomAnchor;
@@ -68,18 +74,35 @@ public class RoomSurvey : MonoBehaviour
         }
     }
 
-    // Forgets every learned tag and starts over: the next tag seen defines the room.
+    // Forgets every learned tag and starts over, from the virtual room's
+    // reference tags if there are any, else from the first tag seen.
     public void NewSurvey()
     {
         roomAnchor.ForgetLearnedTags();
+        var reference = System.Array.Empty<TagPlacement>();
+        if (SharedRoom.TryReadBase(out var baseConfig))
+        {
+            reference = baseConfig.tags;
+            foreach (var tag in reference)
+            {
+                tag.measured = true;
+                if (tag.sizeMeters <= 0f)
+                {
+                    tag.sizeMeters = TagSizeMeters;
+                }
+            }
+        }
         localizer.ApplyConfig(new RoomConfig
         {
             name = RoomName,
             dataManager = DataManager,
             learnUnlistedTags = true,
             defaultTagSizeMeters = TagSizeMeters,
-            tags = System.Array.Empty<TagPlacement>(),
-        }, "new survey");
+            tags = reference,
+        }, reference.Length > 0 ? SharedRoom.BasePath : "new survey");
+        Debug.Log(reference.Length > 0
+            ? $"[RoomSurvey] New survey in the virtual room: anchor on reference tag {string.Join(" or ", System.Array.ConvertAll(reference, t => t.id.ToString()))} (from {SharedRoom.BasePath})"
+            : $"[RoomSurvey] New survey: the first tag seen defines the room (no {SharedRoom.BasePath})");
         SavedConfig = null;
         SavedCodeImage = null;
         SaveMessage = "";

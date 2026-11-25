@@ -702,10 +702,11 @@ public class RoomAnchor : MonoBehaviour
         };
     }
 
-    // Turns the tags about the room's origin so their yaws sit on multiples of
-    // 90 deg, by the average departure of the learned tags. The anchor tag
-    // doesn't count: its yaw defines the room's axes, so it's 0 by
-    // construction, and its error shows up in every other tag instead.
+    // Turns the learned tags about the anchor tag so their yaws sit on
+    // multiples of 90 deg, by their average departure. The anchor stays where
+    // it is: its pose defines the room (the virtual room's reference tag, or
+    // the first tag seen), so an error in sighting it shows up in every other
+    // tag instead, as a turn about it.
     private void SnapToWalls(List<TagPlacement> tags)
     {
         LastSnapDegrees = 0f;
@@ -731,16 +732,28 @@ public class RoomAnchor : MonoBehaviour
         }
         var turn = sum / LastSnapTags;
         var rotation = Quaternion.Euler(0f, -turn, 0f);
+        var pivot = Vector3.zero;
         foreach (var tag in tags)
         {
-            var position = rotation * new Vector3(tag.x, tag.y, tag.z);
+            if (tag.id == surveyAnchorId)
+            {
+                pivot = new Vector3(tag.x, tag.y, tag.z);
+            }
+        }
+        foreach (var tag in tags)
+        {
+            if (tag.id == surveyAnchorId)
+            {
+                continue;
+            }
+            var position = pivot + rotation * (new Vector3(tag.x, tag.y, tag.z) - pivot);
             tag.x = position.x;
             tag.y = position.y;
             tag.z = position.z;
             tag.yawDegrees = Mathf.Repeat(tag.yawDegrees - turn, 360f);
         }
         LastSnapDegrees = turn;
-        Debug.Log($"[RoomAnchor] Snapped to the walls: room turned {-turn:F2} deg about its origin, from {LastSnapTags} learned tag(s)");
+        Debug.Log($"[RoomAnchor] Snapped to the walls: learned tags turned {-turn:F2} deg about anchor tag {surveyAnchorId}, from {LastSnapTags} learned tag(s)");
     }
 
     private float SizeOf(int tagId) =>

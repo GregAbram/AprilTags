@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.0 - 2026-11-25
+
+- A new survey starts from the virtual room's reference tags in
+  `room_base.json` (`SharedRoom.BasePath`; on Quest
+  `/sdcard/AprilTags/room_base.json`), so the survey stays in the virtual
+  room's frame and content placed there lands where it was meant to. Without
+  one, the first tag seen defines the room, as before.
+- Snap to walls turns the learned tags about the anchor tag and leaves the
+  anchor's pose alone (it turned the whole room about the origin), so a
+  reference tag stays where the base config puts it.
+
 ## 0.7.1 - 2026-11-23
 
 - `QuestRoomControls.ForgetLearnedOnX` (default on): an app that wants X for

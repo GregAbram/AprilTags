@@ -19,6 +19,40 @@ public static class SharedRoom
 
     public static bool Supported => Application.platform == RuntimePlatform.Android;
 
+    // The virtual room's reference tags, which a new survey starts from
+    // (RoomSurvey.NewSurvey): a room config whose measured tags place the
+    // virtual room's frame, e.g. one tag hand-measured from the floor. On Quest
+    // in Folder, editable with adb; elsewhere in the app's persistentDataPath.
+    public static string BasePath => Supported
+        ? Folder + "/room_base.json"
+        : Path.Combine(Application.persistentDataPath, "room_base.json");
+
+    // The base config, if there is one with at least one tag.
+    public static bool TryReadBase(out RoomConfig config)
+    {
+        config = null;
+        try
+        {
+            if (!File.Exists(BasePath))
+            {
+                return false;
+            }
+            config = JsonUtility.FromJson<RoomConfig>(File.ReadAllText(BasePath));
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"[SharedRoom] Can't read {BasePath} ({e.Message}); a new survey starts from the first tag seen");
+            return false;
+        }
+        if (config?.tags == null || config.tags.Length == 0)
+        {
+            Debug.LogWarning($"[SharedRoom] {BasePath} lists no tags; a new survey starts from the first tag seen");
+            config = null;
+            return false;
+        }
+        return true;
+    }
+
     public static string GrantCommand =>
         $"adb shell appops set {Application.identifier} MANAGE_EXTERNAL_STORAGE allow";
 
